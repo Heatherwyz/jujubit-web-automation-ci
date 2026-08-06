@@ -1,7 +1,8 @@
 """向飞书群机器人发送 GitHub Actions 测试摘要。
 
 脚本只从环境变量读取机器人 Webhook，不把密钥写进代码或报告。它解析 pytest
-生成的 JUnit XML，区分业务失败与 HTTP 429 访问频控，再以飞书交互卡片发送摘要。
+生成的 JUnit XML，区分业务失败与 HTTP 429 访问频控，并按首页、购物车等业务模块
+生成飞书交互卡片。
 """
 
 from __future__ import annotations
@@ -12,99 +13,359 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 
+SUMMARY_KEYS = (
+    "total",
+    "passed",
+    "failed",
+    "errors",
+    "skipped",
+    "rate_limited",
+    "rate_limited_failures",
+)
+MODULE_ORDER = {"首页": 0, "购物车": 1, "其他": 99}
+MODULE_PATTERNS = {
+    "首页": re.compile(r"(?:^|[^a-z0-9])(?:home|homepage)(?:$|[^a-z0-9])|首页", re.I),
+    "购物车": re.compile(
+        r"(?:^|[^a-z0-9])(?:cart|shopping[_-]?cart|shoppingcart)(?:$|[^a-z0-9])|购物车",
+        re.I,
+    ),
+}
+
+
 def parse_args() -> argparse.Namespace:
-    """读取报告、GitHub 链接、时间戳和本次执行状态。"""
+    """读取报告、GitHub 链接、执行元信息和本次测试状态。"""
     parser = argparse.ArgumentParser(description="向飞书群发送 JuJuBit 自动化测试结果")
     parser.add_argument("--results-xml", default=os.getenv("RESULTS_XML", ""))
     parser.add_argument("--run-url", default=os.getenv("GITHUB_RUN_URL", ""))
     parser.add_argument("--artifact-url", default=os.getenv("REPORT_ARTIFACT_URL", ""))
     parser.add_argument("--run-id", default=os.getenv("REPORT_RUN_ID", ""))
     parser.add_argument("--exit-code", default=os.getenv("TEST_EXIT_CODE", ""))
+    parser.add_argument(
+        "--branch",
+        default=(
+            os.getenv("TEST_BRANCH", "")
+            or os.getenv("GITHUB_HEAD_REF", "")
+            or os.getenv("GITHUB_REF_NAME", "")
+        ),
+    )
+    parser.add_argument(
+        "--actor",
+        default=os.getenv("TEST_ACTOR", "") or os.getenv("GITHUB_ACTOR", ""),
+    )
+    parser.add_argument(
+        "--commit",
+        default=os.getenv("TEST_COMMIT", "") or os.getenv("GITHUB_SHA", ""),
+    )
+    parser.add_argument("--started-at", default=os.getenv("TEST_STARTED_AT", ""))
     return parser.parse_args()
 
 
-def read_results(results_xml: str) -> Dict[str, int]:
-    """从 JUnit XML 汇总通过、失败、错误、跳过和 429 拦截数量。"""
-    summary = {"total": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0, "rate_limited": 0}
+def _empty_counts() -> Dict[str, int]:
+    """创建一组独立计数器，供总计和各模块复用。"""
+    return {key: 0 for key in SUMMARY_KEYS}
+
+
+def _empty_summary() -> Dict[str, Any]:
+    """在 XML 缺失或解析失败时返回仍可生成卡片的空结果。"""
+    return {
+        **_empty_counts(),
+        "duration_seconds": 0.0,
+        "started_at": "",
+        "modules": [],
+    }
+
+
+def _elements(root: ElementTree.Element, name: str) -> Iterable[ElementTree.Element]:
+    """兼容带或不带 XML namespace 的 JUnit 节点。"""
+    return (element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == name)
+
+
+def _safe_seconds(value: str) -> float:
+    """JUnit 的 time 字段异常时按 0 秒处理，避免通知脚本再次失败。"""
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _matches_module(value: str, module: str) -> bool:
+    """识别测试文件、类名或用例名中的业务模块标识。"""
+    return bool(MODULE_PATTERNS[module].search(value.replace("\\", "/")))
+
+
+def module_for_case(case: ElementTree.Element) -> str:
+    """根据 JUnit 的 classname、file 和 name 归类业务模块。
+
+    文件或类名的权重高于用例名。例如首页中的“购物车入口”用例仍属于首页；未来
+    ``test_cart.py``、``TestCart`` 或名称含 ``shopping_cart`` 的用例会归到购物车。
+    """
+    owner = " ".join((case.get("classname", ""), case.get("file", ""))).lower()
+    case_name = case.get("name", "").lower()
+    # 文件/类所属模块优先：例如首页里的“购物车入口”用例即使函数名含 cart，
+    # 仍然应归在“首页”；只有真正的购物车文件/类才归入“购物车”。
+    for module in ("首页", "购物车"):
+        if _matches_module(owner, module):
+            return module
+    for module in ("购物车", "首页"):
+        if _matches_module(case_name, module):
+            return module
+    # 当前仓库只有首页用例；无法识别的新文件单独列为“其他”，避免错误并入首页。
+    return "其他"
+
+
+def _case_result(case: ElementTree.Element) -> tuple[str, bool]:
+    """返回用例结果类别，以及失败内容是否属于 HTTP 429 访问频控。"""
+    children = {
+        child.tag.rsplit("}", 1)[-1]: child
+        for child in case
+        if child.tag.rsplit("}", 1)[-1] in {"failure", "error", "skipped"}
+    }
+    if "failure" in children:
+        outcome = "failed"
+    elif "error" in children:
+        outcome = "errors"
+    elif "skipped" in children:
+        outcome = "skipped"
+    else:
+        outcome = "passed"
+
+    detail_parts = []
+    for child in children.values():
+        detail_parts.extend((child.text or "", child.get("message", "")))
+    detail = " ".join(part for part in detail_parts if part)
+    return outcome, "HTTP 429" in detail or "访问频控" in detail
+
+
+def _suite_duration(root: ElementTree.Element, cases: list[ElementTree.Element]) -> float:
+    """优先使用 JUnit testsuite 总耗时，没有时再累加用例耗时。"""
+    if root.tag.rsplit("}", 1)[-1] == "testsuite":
+        suite_seconds = _safe_seconds(root.get("time", ""))
+        if suite_seconds:
+            return suite_seconds
+
+    direct_suites = [
+        child for child in root if child.tag.rsplit("}", 1)[-1] == "testsuite"
+    ]
+    suite_seconds = sum(_safe_seconds(suite.get("time", "")) for suite in direct_suites)
+    if suite_seconds:
+        return suite_seconds
+    return sum(_safe_seconds(case.get("time", "")) for case in cases)
+
+
+def read_results(results_xml: str) -> Dict[str, Any]:
+    """从 JUnit XML 汇总结果、耗时、开始时间和业务模块。"""
+    summary = _empty_summary()
     path = Path(results_xml) if results_xml else None
     if not path or not path.is_file():
         return summary
 
-    root = ElementTree.parse(path).getroot()
-    cases = root.findall(".//testcase")
+    try:
+        root = ElementTree.parse(path).getroot()
+    except (ElementTree.ParseError, OSError):
+        return summary
+
+    cases = list(_elements(root, "testcase"))
     summary["total"] = len(cases)
+    modules: Dict[str, Dict[str, Any]] = {}
     for case in cases:
-        failure = case.find("failure")
-        error = case.find("error")
-        skipped = case.find("skipped")
-        detail = " ".join(
-            value for value in (
-                (failure.text if failure is not None else ""),
-                (failure.get("message", "") if failure is not None else ""),
-                (error.text if error is not None else ""),
-                (error.get("message", "") if error is not None else ""),
-                (skipped.text if skipped is not None else ""),
-                (skipped.get("message", "") if skipped is not None else ""),
-            ) if value
-        )
-        if failure is not None:
-            summary["failed"] += 1
-        elif error is not None:
-            summary["errors"] += 1
-        elif skipped is not None:
-            summary["skipped"] += 1
-        else:
-            summary["passed"] += 1
-        if "HTTP 429" in detail or "访问频控" in detail:
+        outcome, rate_limited = _case_result(case)
+        summary[outcome] += 1
+        if rate_limited:
             summary["rate_limited"] += 1
+            if outcome in {"failed", "errors"}:
+                summary["rate_limited_failures"] += 1
+
+        module_name = module_for_case(case)
+        module = modules.setdefault(
+            module_name,
+            {
+                "name": module_name,
+                **_empty_counts(),
+                "duration_seconds": 0.0,
+            },
+        )
+        module["total"] += 1
+        module[outcome] += 1
+        module["duration_seconds"] += _safe_seconds(case.get("time", ""))
+        if rate_limited:
+            module["rate_limited"] += 1
+            if outcome in {"failed", "errors"}:
+                module["rate_limited_failures"] += 1
+
+    suites = list(_elements(root, "testsuite"))
+    summary["duration_seconds"] = _suite_duration(root, cases)
+    summary["started_at"] = next(
+        (suite.get("timestamp", "") for suite in suites if suite.get("timestamp")),
+        "",
+    )
+    summary["modules"] = sorted(
+        modules.values(),
+        key=lambda item: (MODULE_ORDER.get(item["name"], 50), item["name"]),
+    )
     return summary
 
 
-def card_template(
-    summary: Dict[str, int],
-    run_url: str,
-    artifact_url: str,
-    exit_code: str,
-    run_id: str = "",
-) -> Dict[str, object]:
-    """生成包含 GitHub 运行记录和 HTML 报告下载入口的飞书卡片。"""
-    business_failures = max(
-        0, summary["failed"] + summary["errors"] - summary["rate_limited"]
+def _business_failures(summary: Dict[str, Any]) -> int:
+    """从失败与错误中剔除已确认的 HTTP 429 访问频控。"""
+    failed_or_error = int(summary.get("failed", 0)) + int(summary.get("errors", 0))
+    rate_limited_failures = int(
+        summary.get("rate_limited_failures", summary.get("rate_limited", 0))
     )
-    if summary["total"] == 0:
-        color, status = "orange", "未取得 JUnit 结果"
-    elif business_failures > 0:
+    return max(0, failed_or_error - rate_limited_failures)
+
+
+def _format_duration(seconds: Any) -> str:
+    """把秒数转换为适合群消息快速阅读的中文耗时。"""
+    total_seconds = int(round(_safe_seconds(str(seconds))))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}时{minutes}分{seconds}秒"
+    if minutes:
+        return f"{minutes}分{seconds}秒"
+    return f"{seconds}秒"
+
+
+def _display_value(value: str, fallback: str = "未知", max_length: int = 80) -> str:
+    """清理 GitHub 元信息中的换行和 Markdown 定界符，避免卡片排版被破坏。"""
+    cleaned = " ".join((value or "").replace("`", "'").split())
+    if not cleaned:
+        return fallback
+    return cleaned[:max_length]
+
+
+def _format_started_at(value: str) -> str:
+    """将 JUnit ISO 时间压缩为无微秒、便于阅读的格式。"""
+    cleaned = _display_value(value)
+    if cleaned == "未知":
+        return cleaned
+    # 仅替换 ISO 8601 日期和时间之间的 T；不能误改时区缩写 CST 中的 T。
+    cleaned = re.sub(r"(?<=\d)T(?=\d)", " ", cleaned, count=1)
+    # JUnit 时间通常带六位微秒；群通知不需要展示这一精度。
+    return re.sub(r"(?<=\d)\.\d+(?=(?:Z|[+-]\d{2}:?\d{2})?$)", "", cleaned)
+
+
+def _module_lines(summary: Dict[str, Any]) -> str:
+    """生成“模块结果”列表；首页固定排在购物车之前。"""
+    modules = summary.get("modules") or []
+    if not modules and int(summary.get("total", 0)):
+        modules = [
+            {
+                "name": "首页",
+                **{key: int(summary.get(key, 0)) for key in SUMMARY_KEYS},
+                "duration_seconds": summary.get("duration_seconds", 0),
+            }
+        ]
+    if not modules:
+        return "暂无模块结果"
+
+    lines = []
+    for module in modules:
+        business_failures = _business_failures(module)
+        rate_limited = int(module.get("rate_limited", 0))
+        skipped = int(module.get("skipped", 0))
+        if business_failures:
+            state = "失败"
+        elif rate_limited or skipped:
+            state = "需关注"
+        else:
+            state = "通过"
+        details = [
+            f"{int(module.get('passed', 0))}/{int(module.get('total', 0))}",
+            _format_duration(module.get("duration_seconds", 0)),
+        ]
+        if business_failures:
+            details.append(f"业务失败 {business_failures}")
+        if skipped:
+            details.append(f"跳过 {skipped}")
+        if rate_limited:
+            details.append(f"429 频控 {rate_limited}")
+        lines.append(
+            f"**{state}｜{module['name']}**　" + " · ".join(details)
+        )
+    return "\n".join(lines)
+
+
+def card_template(
+    summary: Dict[str, Any],
+    run_url: str = "",
+    artifact_url: str = "",
+    exit_code: str = "",
+    run_id: str = "",
+    branch: str = "",
+    actor: str = "",
+    commit: str = "",
+    started_at: str = "",
+) -> Dict[str, object]:
+    """生成包含执行信息、模块结果和报告入口的飞书卡片。"""
+    total = int(summary.get("total", 0))
+    passed = int(summary.get("passed", 0))
+    skipped = int(summary.get("skipped", 0))
+    rate_limited = int(summary.get("rate_limited", 0))
+    business_failures = _business_failures(summary)
+    normalized_exit_code = str(exit_code).strip()
+    # pytest 的 1 表示“用例有失败”，已由 JUnit 明细解释；2~5 才是进程级异常。
+    abnormal_exit = bool(normalized_exit_code and normalized_exit_code not in {"0", "1"})
+    if business_failures > 0:
         color, status = "red", "发现业务失败"
-    elif summary["rate_limited"] > 0:
-        color, status = "orange", "被站点频控拦截"
-    elif summary["skipped"] > 0:
+    elif abnormal_exit:
+        color, status = "red", "测试进程异常"
+    elif total == 0:
+        color, status = "orange", "未取得测试结果"
+    elif rate_limited > 0:
+        color, status = "orange", "受站点频控影响"
+    elif skipped > 0:
         color, status = "blue", "执行完成（含跳过用例）"
     else:
         color, status = "green", "全部通过"
 
+    pass_rate = (passed / total * 100) if total else 0.0
     fields = [
-        {"is_short": True, "text": {"tag": "lark_md", "content": f"**总用例**\n{summary['total']}"}},
-        {"is_short": True, "text": {"tag": "lark_md", "content": f"**通过**\n{summary['passed']}"}},
-        {"is_short": True, "text": {"tag": "lark_md", "content": f"**业务失败**\n{business_failures}"}},
-        {"is_short": True, "text": {"tag": "lark_md", "content": f"**429 频控**\n{summary['rate_limited']}"}},
-        {"is_short": True, "text": {"tag": "lark_md", "content": f"**跳过**\n{summary['skipped']}"}},
-        {"is_short": True, "text": {"tag": "lark_md", "content": f"**执行码**\n{exit_code or '未知'}"}},
+        {
+            "is_short": True,
+            "text": {
+                "tag": "lark_md",
+                "content": f"**通过率**\n{pass_rate:.1f}%（{passed}/{total}）",
+            },
+        },
+        {
+            "is_short": True,
+            "text": {
+                "tag": "lark_md",
+                "content": f"**业务失败 / 跳过**\n{business_failures} / {skipped}",
+            },
+        },
+        {
+            "is_short": True,
+            "text": {
+                "tag": "lark_md",
+                "content": f"**耗时**\n{_format_duration(summary.get('duration_seconds', 0))}",
+            },
+        },
+        {
+            "is_short": True,
+            "text": {
+                "tag": "lark_md",
+                "content": f"**429 频控**\n{rate_limited}",
+            },
+        },
     ]
     actions = []
     if run_url:
         actions.append(
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "打开 GitHub 执行记录"},
+                "text": {"tag": "plain_text", "content": "查看运行与报告"},
                 "type": "primary",
                 "url": run_url,
             }
@@ -113,24 +374,51 @@ def card_template(
         actions.append(
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "下载 HTML 报告与录像"},
+                "text": {"tag": "plain_text", "content": "下载 HTML 报告与录屏"},
                 "type": "default",
                 "url": artifact_url,
             }
         )
-    run_label = f"\n运行标识：{run_id}" if run_id else ""
+    commit_label = _display_value(commit, max_length=40)
+    if commit_label != "未知":
+        commit_label = commit_label[:7]
+    started_label = _format_started_at(started_at or str(summary.get("started_at", "")))
+    execution_info = (
+        f"**分支**　{_display_value(branch)}　　"
+        f"**执行人**　{_display_value(actor)}\n"
+        f"**提交**　`{commit_label}`　　"
+        f"**开始时间**　{started_label}"
+    )
+    if run_id:
+        execution_info += f"\n**运行标识**　{_display_value(run_id)}"
     elements = [
-        {"tag": "div", "text": {"tag": "lark_md", "content": f"**状态：{status}**\n执行时间：{time.strftime('%Y-%m-%d %H:%M:%S %Z')}{run_label}"}},
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**状态：{status}**　　总用例：{total}",
+            },
+        },
         {"tag": "div", "fields": fields},
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": execution_info}},
+        {"tag": "hr"},
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**模块结果**\n{_module_lines(summary)}",
+            },
+        },
     ]
-    if summary["rate_limited"]:
+    if rate_limited:
         elements.append(
             {
                 "tag": "note",
                 "elements": [
                     {
                         "tag": "plain_text",
-                        "content": "HTTP 429 表示站点访问频控；这些 case 未实际执行，不应按页面功能缺陷处理。",
+                        "content": "HTTP 429 表示站点访问频控；相关用例未完成业务校验，不按页面功能缺陷统计。",
                     }
                 ],
             }
@@ -143,7 +431,10 @@ def card_template(
             "config": {"wide_screen_mode": True},
             "header": {
                 "template": color,
-                "title": {"tag": "plain_text", "content": "JuJuBit 首页自动化测试"},
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"JuJuBit 自动化测试 · {status}",
+                },
             },
             "elements": elements,
         },
@@ -208,6 +499,10 @@ def main() -> int:
         args.artifact_url,
         args.exit_code,
         args.run_id,
+        args.branch,
+        args.actor,
+        args.commit,
+        args.started_at,
     )
     payload = sign_payload(payload, os.getenv("LARK_WEBHOOK_SECRET", ""))
     try:

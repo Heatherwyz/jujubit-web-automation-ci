@@ -1,6 +1,6 @@
-# JuJuBit 首页自动化测试
+# JuJuBit UI 自动化测试
 
-本项目仅保留 `pytest + Playwright Python` 自动化方案，覆盖 JuJuBit 首页的 PC 和 H5。
+本项目使用 `pytest + Playwright Python` 自动化方案，覆盖 JuJuBit 各 UI 模块的 PC 和 H5。
 
 ## 安装
 
@@ -17,14 +17,21 @@ python3 -m venv .venv
 .venv/bin/python run_all.py
 ```
 
-如首页出现 HTTP 429 或网站要求人工确认，可用有界面模式运行：
+购物车端到端用例会真实上传图片、创建一次生成任务并修改购物车，因此默认不执行。
+确认测试环境和账号配额可用后，显式执行首页与购物车全部用例：
+
+```bash
+.venv/bin/python run_all.py --include-cart
+```
+
+如站点出现 HTTP 429 或网站要求人工确认，可用有界面模式运行：
 
 ```bash
 .venv/bin/python run_all.py --manual-verification
 ```
 
 脚本会在出现 429 时暂停；请在弹出的浏览器中自行完成网站要求的确认，确认
-首页显示后回到终端按 Enter，脚本会从当前 case 继续。脚本不会自动绕过人机验证。
+页面显示后回到终端按 Enter，脚本会从当前 case 继续。脚本不会自动绕过人机验证。
 
 该命令会自动：
 
@@ -52,9 +59,9 @@ artifacts/runs/<时间戳>/jujubit-report-<时间戳>.html
 ## GitHub Actions 每日运行
 
 项目已经包含 `.github/workflows/daily-ui-tests.yml`，可以在 GitHub 上安装
-Playwright Chromium，执行全部 52 条 PC/H5 用例，并在每次运行后上传 HTML、截图、
+Playwright Chromium，执行自动收集的全部 PC/H5 用例，并在每次运行后上传 HTML、截图、
 失败录像和 `results.xml`。工作流默认每天北京时间 09:00（UTC 01:00）执行，也可以在
-仓库的 **Actions → JuJuBit Home UI Tests → Run workflow** 手动触发。
+仓库的 **Actions → JuJuBit UI Tests → Run workflow** 手动触发。
 
 ### 第一次推送到 GitHub
 
@@ -80,9 +87,10 @@ git push -u origin main
 | `LARK_WEBHOOK_URL` | 飞书机器人的完整 Webhook 地址（必填） |
 | `LARK_WEBHOOK_SECRET` | 机器人开启签名校验时填写的 Secret；未开启可不填 |
 
-Webhook 只从 GitHub Secrets 读取，不会写入代码。通知卡片会显示总数、通过、业务失败、
-429 频控、跳过数量，并提供 **打开 GitHub 执行记录** 和 **下载 HTML 报告与录像** 两个
-按钮。Artifact 名称包含本次运行的时间戳，例如
+Webhook 只从 GitHub Secrets 读取，不会写入代码。通知卡片会显示状态、通过率、业务失败、
+跳过、429 频控、耗时、分支、执行人、提交、开始时间和模块结果，并提供 **查看运行与报告**
+和 **下载 HTML 报告与录屏** 两个按钮。测试文件名或类名包含 `cart` / `shopping_cart` 的用例
+会自动归入“购物车”，首页用例仍归入“首页”。Artifact 名称包含本次运行的时间戳，例如
 `jujubit-ui-report-20260806-150512`，可用于区分每天的结果。
 
 下载按钮指向 GitHub Artifact，通常会下载 ZIP；解压后打开其中带时间戳的 HTML 文件，
@@ -118,6 +126,16 @@ RESULTS_XML=artifacts/runs/<时间戳>/results.xml \
 
 用例函数只要声明 `test_platform` 参数，`python_playwright/tests/conftest.py`
 内的 `pytest_generate_tests` 会自动生成 PC 和 H5 两条执行记录。因此新增 case
-通常只需：在 `test_home.py` 或 `test_home_requirements.py` 新增 `test_...` 函数，
-并在同文件夹的 `conftest.py` 的 `CASE_TITLES` 添加中文名称；不需要修改
-`run_all.py`。
+通常只需：在对应模块的 `test_*.py` 中新增 `test_...` 函数，并在同文件夹的
+`conftest.py` 的 `CASE_TITLES` 添加中文名称；不需要修改 `run_all.py`。
+
+### 购物车主流程
+
+`python_playwright/tests/test_cart.py` 只生成一次模型，并在同一条主流程中验证 Gallery
+的 2D/3D 结果、半屏购物车、100 件数量上限对应的 `99+` 角标、半屏 Checkout、全屏购物车
+和全屏 Checkout。默认测试图片来自 JuJuBit CDN，也可以通过 `--pw-cart-image` 传入本地图片
+或其他图片 URL；生成等待上限通过 `--pw-generation-timeout`（秒）调整。
+
+购物车用例使用 `cart_session` 标记；只有 `--pw-storage-state` 指向存在的
+`artifacts/auth/storage-state.json` 时才加载登录态，不会影响首页用例。首次登录需要验证码时，
+请在本地可见浏览器中完成登录后导出该 state 文件，文件已被 `.gitignore` 排除。

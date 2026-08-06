@@ -1,4 +1,4 @@
-name: JuJuBit Home UI Tests
+name: JuJuBit UI Tests
 
 on:
   workflow_dispatch:
@@ -6,9 +6,9 @@ on:
     # GitHub Actions 的 cron 使用 UTC；01:00 UTC 即中国标准时间每日 09:00。
     - cron: "0 1 * * *"
 
-# 防止手动触发与定时任务并发访问首页，降低触发站点 429 频控的概率。
+# 防止手动触发与定时任务并发访问站点，降低触发站点 429 频控的概率。
 concurrency:
-  group: jujubit-home-ui-tests
+  group: jujubit-ui-tests
   cancel-in-progress: false
 
 permissions:
@@ -18,7 +18,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       # 让报告目录和卡片中的时间戳使用中国标准时间，便于和每日 09:00 调度对应。
       TZ: Asia/Shanghai
@@ -41,7 +41,15 @@ jobs:
           python -m pip install -r requirements-playwright.txt
           python -m playwright install --with-deps chromium
 
-      - name: 执行首页回归
+      - name: 校验飞书报告脚本
+        run: python -m pytest tests/test_send_lark_test_report.py -q
+
+      - name: 记录测试开始时间
+        id: test_meta
+        shell: bash
+        run: echo "started_at=$(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$GITHUB_OUTPUT"
+
+      - name: 执行 UI 回归
         id: suite
         shell: bash
         run: |
@@ -70,7 +78,7 @@ jobs:
           echo "results_xml=${run_dir}/results.xml" >> "$GITHUB_OUTPUT"
           if [[ -f "${run_dir}/jujubit-report-${run_id}.html" ]]; then
             {
-              echo "### JuJuBit 首页自动化报告"
+              echo "### JuJuBit 自动化测试报告"
               echo "- 本次目录：\`${run_id}\`"
               echo "- HTML 报告和失败录像：见下方 Artifact 下载项"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -98,6 +106,10 @@ jobs:
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REPORT_ARTIFACT_URL: ${{ steps.upload_report.outputs.artifact-url }}
           TEST_EXIT_CODE: ${{ steps.suite.outputs.exit_code }}
+          TEST_BRANCH: ${{ github.head_ref || github.ref_name }}
+          TEST_ACTOR: ${{ github.actor }}
+          TEST_COMMIT: ${{ github.sha }}
+          TEST_STARTED_AT: ${{ steps.test_meta.outputs.started_at }}
         run: python scripts/send_lark_test_report.py
 
       - name: 保持 GitHub 运行结果与测试结果一致

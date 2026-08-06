@@ -6,7 +6,7 @@
 
 
 def pytest_addoption(parser):
-    """注册平台、报告、录像和 429 人工确认相关参数。"""
+    """注册平台、报告、录像、购物车和人工确认相关参数。"""
     parser.addoption("--pw-platform", choices=("all", "pc", "h5"), default="all")
     parser.addoption("--headed", action="store_true", default=False)
     parser.addoption("--base-url", default="https://jujubit.ai")
@@ -34,6 +34,22 @@ def pytest_addoption(parser):
         type=float,
         default=0.8,
         help="批量检查首页站内链接时的最小请求间隔（秒）。",
+    )
+    parser.addoption(
+        "--pw-cart-image",
+        default="https://jujubit.ai/cdn/shop/files/pod_1800x1800.png?v=1770294841",
+        help="购物车主流程使用的 PNG/JPG/WebP 本地路径或 URL。",
+    )
+    parser.addoption(
+        "--pw-generation-timeout",
+        type=int,
+        default=600,
+        help="等待 2D 图片和 3D 模型生成完成的最长秒数。",
+    )
+    parser.addoption(
+        "--pw-storage-state",
+        default="artifacts/auth/storage-state.json",
+        help="Playwright 登录状态文件路径；测试 fixture 会在文件存在时复用。",
     )
     parser.addoption(
         "--pw-artifact-dir",

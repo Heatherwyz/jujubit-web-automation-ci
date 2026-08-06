@@ -135,8 +135,9 @@ def test_tc15_header_tools_exist(home, page, test_platform):
     """TC-15：头部搜索/菜单、登录和购物车入口存在。"""
     home.close_welcome_popup()
     if test_platform == "h5":
-        expect(page.get_by_role("button", name="Site navigation")).to_be_attached()
+        expect(page.get_by_role("button", name="Site navigation", exact=True)).to_be_attached()
     else:
-        expect(page.get_by_role("link", name="Search")).to_be_attached()
-    expect(page.get_by_role("link", name="Log in")).to_be_attached()
-    expect(page.get_by_role("button", name="Cart")).to_be_attached()
+        expect(page.get_by_role("link", name="Search", exact=True)).to_be_attached()
+    expect(page.get_by_role("link", name="Log in", exact=True)).to_be_attached()
+    # 精确匹配 Cart，避免把购物车抽屉内的 Close cart 也算作头部入口。
+    expect(page.get_by_role("button", name="Cart", exact=True)).to_be_attached()
