@@ -1,0 +1,15 @@
+# 本机 Python 虚拟环境与 pytest 缓存不应提交到仓库。
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# 每次运行生成的 HTML、截图、录像和临时人工验证状态均为产物，不提交历史文件。
+artifacts/
+
+# 本机 IDE 和系统文件。
+.idea/
+.DS_Store
+
+# 飞书授权流程生成的本地二维码，不属于测试工程，也不得提交到远程仓库。
+lark-*.png

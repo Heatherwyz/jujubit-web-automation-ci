@@ -1,0 +1,110 @@
+name: JuJuBit Home UI Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub Actions 的 cron 使用 UTC；01:00 UTC 即中国标准时间每日 09:00。
+    - cron: "0 1 * * *"
+
+# 防止手动触发与定时任务并发访问首页，降低触发站点 429 频控的概率。
+concurrency:
+  group: jujubit-home-ui-tests
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # 让报告目录和卡片中的时间戳使用中国标准时间，便于和每日 09:00 调度对应。
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: 拉取测试代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-playwright.txt
+
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-playwright.txt
+          python -m playwright install --with-deps chromium
+
+      - name: 执行首页回归
+        id: suite
+        shell: bash
+        run: |
+          # 不在这里立即退出：保证失败时仍能上传报告并推送飞书通知。
+          set +e
+          python run_all.py
+          exit_code=$?
+          echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: 定位本次报告
+        id: report
+        if: always()
+        shell: bash
+        run: |
+          # run_all.py 每次只创建一个以时间戳命名的目录；只上传该目录，避免把历史报告重复打包。
+          run_dir=$(find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort | tail -n 1 || true)
+          if [[ -z "$run_dir" ]]; then
+            echo "未找到本次运行目录：artifacts/runs" >&2
+            exit 1
+          fi
+          run_dir=${run_dir%/}
+          run_id=$(basename "$run_dir")
+          echo "run_dir=${run_dir}" >> "$GITHUB_OUTPUT"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          echo "results_xml=${run_dir}/results.xml" >> "$GITHUB_OUTPUT"
+          if [[ -f "${run_dir}/jujubit-report-${run_id}.html" ]]; then
+            {
+              echo "### JuJuBit 首页自动化报告"
+              echo "- 本次目录：\`${run_id}\`"
+              echo "- HTML 报告和失败录像：见下方 Artifact 下载项"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 上传 HTML 报告、失败截图和录像
+        id: upload_report
+        if: always() && steps.report.outputs.run_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          # Artifact 名称包含 run_all.py 生成的时间戳，可作为唯一标识。
+          name: jujubit-ui-report-${{ steps.report.outputs.run_id }}
+          path: ${{ steps.report.outputs.run_dir }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 推送结果到飞书群
+        if: always()
+        continue-on-error: true
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+          LARK_WEBHOOK_SECRET: ${{ secrets.LARK_WEBHOOK_SECRET }}
+          RESULTS_XML: ${{ steps.report.outputs.results_xml }}
+          REPORT_RUN_ID: ${{ steps.report.outputs.run_id }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT_ARTIFACT_URL: ${{ steps.upload_report.outputs.artifact-url }}
+          TEST_EXIT_CODE: ${{ steps.suite.outputs.exit_code }}
+        run: python scripts/send_lark_test_report.py
+
+      - name: 保持 GitHub 运行结果与测试结果一致
+        if: always()
+        shell: bash
+        run: |
+          exit_code="${{ steps.suite.outputs.exit_code }}"
+          # 如果测试进程在生成输出前就崩溃，仍让 Job 明确失败。
+          if [[ -z "$exit_code" ]]; then exit_code=1; fi
+          exit "$exit_code"
