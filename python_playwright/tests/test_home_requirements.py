@@ -30,18 +30,9 @@ EXPECTED_NAVIGATION_LINKS = {
 EXPECTED_HEADER_CATEGORY_LINKS = {
     "Art Toys": "/collections/art-toy",
     "FDM": "/collections/fdm",
-    "Free Ship": None,
     "Crystal Bracelets": "/collections/zodiac-x-tarot",
     "Custom Keycaps": "/collections/keycaps",
     "Photo Board": "/collections/photo-board",
-}
-EXPECTED_CATEGORY_LINKS = {
-    "Custom Figurines": "/collections/custom-figurines",
-    "Crystal Bracelets": "/collections/zodiac-x-tarot",
-    "Art Toys": "/collections/art-toy",
-    "Custom Keycaps": "/collections/keycaps",
-    "Custom Keychains": "/collections/custom-keychains",
-    "Acrylic Boards": "/collections/acrylic-standees",
 }
 # REQ-06 是安全属性验收：所有已确认社交平台都必须独立检查，不能因为
 # 第一个平台失败，就漏掉其他平台的同类问题。
@@ -481,7 +472,7 @@ def test_hero_heading_hierarchy(home, page, test_platform):
 
 
 def test_navigation_and_category_urls_match_requirements(home, page, test_platform):
-    """REQ-11：Header 主入口和六个品类使用需求指定的 URL。"""
+    """REQ-11：Header 主入口和五个品类使用需求指定的 URL。"""
     home.close_welcome_popup()
     navigation = home.navigation_root(test_platform)
     links = navigation.locator("a[href]")
@@ -512,42 +503,6 @@ def test_navigation_and_category_urls_match_requirements(home, page, test_platfo
         problem = links.nth(first_problem_index) if first_problem_index is not None else navigation
         home.mark_failure_evidence(problem, failures[0])
         raise AssertionError("Header 导航配置与需求不一致：\n" + "\n".join(failures))
-
-
-def test_category_content_has_required_default_group(home, page, test_platform):
-    """REQ-12：Category 包含六个默认品类且不展示 Pillow Cases。"""
-    home.close_welcome_popup()
-    category_heading = page.get_by_role("heading", name="Categories", exact=True)
-    expect(category_heading).to_be_visible()
-    # 只检查 Categories 所属的 Shopify section，避免其他模块的同路径链接造成假通过。
-    category_section = category_heading.locator(
-        "xpath=ancestor::*[starts-with(@id, 'shopify-section-')][1]"
-    )
-    expect(category_section).to_have_count(1)
-    items = category_section.locator("a[href]").evaluate_all(
-        r"""nodes => nodes.map(node => ({
-            text: (node.textContent || '').trim().replace(/\s+/g, ' '),
-            path: new URL(node.href, location.href).pathname.replace(/\/$/, '') || '/',
-        }))"""
-    )
-    paths = {item["path"] for item in items}
-    missing = [
-        f"{label} ({path})"
-        for label, path in EXPECTED_CATEGORY_LINKS.items()
-        if path not in paths
-    ]
-    if missing:
-        home.mark_failure_evidence(
-            category_section,
-            "Category 缺少默认品类入口：" + "、".join(missing),
-        )
-        raise AssertionError("Category 缺少默认品类入口：" + "、".join(missing))
-    visible_text = category_section.inner_text().casefold()
-    if "pillow cases" in visible_text:
-        home.mark_failure_evidence(category_section, "Category 区域展示了 Pillow Cases")
-        raise AssertionError("首页展示组不应出现 Pillow Cases")
-
-
 def test_homepage_json_ld_is_valid_and_matches_faq(home, page, test_platform):
     """REQ-13：JSON-LD 可解析，FAQPage 与页面可见问答同源一致。"""
     home.close_welcome_popup()

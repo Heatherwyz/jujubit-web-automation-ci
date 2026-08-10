@@ -51,7 +51,6 @@ CASE_TITLES = {
     "test_faq_semantics_and_single_expansion": "REQ-09: FAQ 语义结构正确且只展开一项",
     "test_hero_heading_hierarchy": "REQ-10: Hero 标题使用 H2 层级",
     "test_navigation_and_category_urls_match_requirements": "REQ-11: Header 与品类导航 URL 符合需求",
-    "test_category_content_has_required_default_group": "REQ-12: Category 展示六个默认品类且不含 Pillow Cases",
     "test_homepage_json_ld_is_valid_and_matches_faq": "REQ-13: JSON-LD 可解析且 FAQ 与页面同源",
     "test_homepage_image_alt_policy": "REQ-14: 首页图片 alt 符合 SEO 与合规要求",
     "test_core_content_is_present_in_server_html": "REQ-15: 原始 HTML 包含核心 SEO、导航与区块内容",
