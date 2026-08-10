@@ -21,16 +21,23 @@ EXPECTED_DESCRIPTION = (
     "JuJuBit makes custom figurines from your photo, crystal bracelets, and art toys. "
     "AI-assisted design, worldwide shipping. Turn your photo into a 3D collectible."
 )
-EXPECTED_H1 = "Create a Custom Figurine From Your Photo"
+EXPECTED_H1 = "Create Your Own Custom Figurine From a Photo"
 EXPECTED_LOGO_ALT = "JuJuBit - Custom 3D Figurines"
 EXPECTED_NAVIGATION_LINKS = {
     "Templates": "/collections/templates-create-your-own",
-    "Gallery": "/pages/gallery",
     "How It Works": "/pages/how-it-works",
+}
+EXPECTED_HEADER_CATEGORY_LINKS = {
+    "Art Toys": "/collections/art-toy",
+    "FDM": "/collections/fdm",
+    "Free Ship": None,
+    "Crystal Bracelets": "/collections/zodiac-x-tarot",
+    "Custom Keycaps": "/collections/keycaps",
+    "Photo Board": "/collections/photo-board",
 }
 EXPECTED_CATEGORY_LINKS = {
     "Custom Figurines": "/collections/custom-figurines",
-    "Crystal Bracelets": "/collections/crystal-bracelets",
+    "Crystal Bracelets": "/collections/zodiac-x-tarot",
     "Art Toys": "/collections/art-toy",
     "Custom Keycaps": "/collections/keycaps",
     "Custom Keychains": "/collections/custom-keychains",
@@ -375,20 +382,27 @@ def test_external_social_links_are_safe(home, page, test_platform):
 
 
 def test_homepage_links_are_real_anchors(home, page, test_platform):
-    """REQ-07：核心导航与 CTA 都是带有效 href 的真实链接。"""
+    """REQ-07：当前渲染的一级导航均为带有效 href 的真实链接。"""
     home.close_welcome_popup()
-    # Categories 是下拉容器，不要求自身有落地页；其六个子项由 REQ-11 校验。
-    labels = ("Create", "Templates", "Gallery", "How It Works")
     navigation = home.navigation_root(test_platform)
-    for label in labels:
-        links = navigation.locator("a[href]").filter(has_text=re.compile(rf"^\s*{re.escape(label)}\s*$"))
-        if links.count() < 1:
-            home.mark_failure_evidence(navigation, f"导航缺少可点击的真实链接：{label}")
-            raise AssertionError(f"导航项不是可点击的真实链接：{label}")
-        href = links.first.get_attribute("href")
+    link_selector = (
+        "a.jjb-header__menu-link"
+        if test_platform == "pc"
+        else "a.jjb-mobile-nav__link:not(.jjb-mobile-nav__submenu-link)"
+    )
+    links = navigation.locator(link_selector)
+    assert links.count() >= 1, "当前导航未渲染任何一级链接"
+    failures = []
+    for index, link in enumerate(links.all()):
+        label = " ".join(link.inner_text().split()) or f"第 {index + 1} 项"
+        href = link.get_attribute("href")
         if not href or href == "#":
-            home.mark_failure_evidence(links.first, f"导航项 {label} 的 href={href!r}")
-            raise AssertionError(f"导航项 href 无效：{label}")
+            failures.append((link, label, href))
+    if failures:
+        first_link, first_label, first_href = failures[0]
+        home.mark_failure_evidence(first_link, f"导航项 {first_label} 的 href={first_href!r}")
+        details = "；".join(f"{label}: href={href!r}" for _, label, href in failures)
+        raise AssertionError(f"一级导航存在无效链接：{details}")
 
 
 def test_social_videos_have_inline_playback_attributes(home, page, test_platform):
@@ -478,7 +492,7 @@ def test_navigation_and_category_urls_match_requirements(home, page, test_platfo
             path: new URL(node.href, location.href).pathname.replace(/\/$/, '') || '/',
         }))"""
     )
-    expected = {**EXPECTED_NAVIGATION_LINKS, **EXPECTED_CATEGORY_LINKS}
+    expected = {**EXPECTED_NAVIGATION_LINKS, **EXPECTED_HEADER_CATEGORY_LINKS}
     failures = []
     first_problem_index = None
     for label, expected_path in expected.items():
@@ -487,7 +501,7 @@ def test_navigation_and_category_urls_match_requirements(home, page, test_platfo
             failures.append(f"缺少导航链接 {label!r}")
             continue
         actual_paths = {item["path"] for item in matches}
-        if expected_path not in actual_paths:
+        if expected_path is not None and expected_path not in actual_paths:
             failures.append(
                 f"{label!r} 应指向 {expected_path}，实际为 {sorted(actual_paths)}"
             )

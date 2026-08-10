@@ -46,7 +46,7 @@ CASE_TITLES = {
     "test_configured_navigation_and_hero_links_can_open": "REQ-04B: 首页配置的导航与 Hero 链接可真实打开",
     "test_footer_locale_switcher_is_available": "REQ-05: Footer 地区与币种切换器可见且可展开",
     "test_external_social_links_are_safe": "REQ-06: Footer 五个平台地址、名称与安全属性正确",
-    "test_homepage_links_are_real_anchors": "REQ-07: 首页导航与 CTA 使用真实链接",
+    "test_homepage_links_are_real_anchors": "REQ-07: 当前一级导航均使用有效真实链接",
     "test_social_videos_have_inline_playback_attributes": "REQ-08: 社交视频具备移动端内联静音循环属性",
     "test_faq_semantics_and_single_expansion": "REQ-09: FAQ 语义结构正确且只展开一项",
     "test_hero_heading_hierarchy": "REQ-10: Hero 标题使用 H2 层级",

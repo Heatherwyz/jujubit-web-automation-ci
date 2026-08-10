@@ -75,7 +75,7 @@
 |---|---|---|---|---|
 | SEO | P0 | 获取首页 title | 精确为 `JuJuBit \| Custom Figurines, Crystal Bracelets & Art Toys` | UI/API |
 | SEO | P0 | 获取 meta description | 精确为需求文案，不为空且仅一个 | UI/API |
-| SEO | P0 | 检查 H1 | 全页唯一，文本为 `Create a Custom Figurine From Your Photo` | UI |
+| SEO | P0 | 检查 H1 | 全页唯一，文本为 `Create Your Own Custom Figurine From a Photo` | UI |
 | SEO | P0 | 禁用 JavaScript 后请求首页 HTML | H1、导航、主要区块和链接存在于服务端 HTML | API |
 | SEO | P1 | 检查 Organization、WebSite JSON-LD | JSON 可解析；名称、URL 等与可见内容同源一致 | UI/API |
 | 链接 | P0 | 关闭优惠弹窗，读取并遍历首页实际配置的公告、Header、Hero、主要区块与 Footer 站内链接 | 每个实际 href 均非 404/5xx，响应正文不为空且无白屏；不预设固定路径 | UI/API |
@@ -102,7 +102,7 @@
 7. 埋点事件名称、公共字段、曝光阈值、去重周期和验收环境尚未最终确定，暂不能形成稳定自动化断言。
 8. PC/H5 独立媒体缺失一端配置时的回退优先级未明确。
 9. “Hero 始终第一业务区块”与商家在 Theme Editor 中拖动 Hero 到其他位置时，系统应禁止拖动还是保存后强制纠正，需要明确。
-10. Showcase 的六个分类应为 Custom Figurines、Crystal Bracelets、Art Toys、Custom Keycaps、Custom Keychains、Acrylic Boards；无数据分类的显隐策略仍需提供验收基准。
+10. Header Categories 的六个二级入口为 Art Toys、FDM、Free Ship、Crystal Bracelets、Custom Keycaps、Photo Board；Free Ship 的最终 URL 仍需提供验收基准。
 11. `review_images` 仅规定全角 `｜`；是否兼容半角 `|` 和历史逗号格式需确认。
 
 ## 5. 自动化实施分层
@@ -119,12 +119,12 @@
 | 需求来源 | 补充场景 | 优先级 | 预期结果 | 自动化 |
 |---|---|---|---|---|
 | 文案/SEO | 首页元数据 | P0 | `title` 精确为 `JuJuBit \| Custom Figurines, Crystal Bracelets & Art Toys`；meta description 精确为 `JuJuBit makes custom figurines from your photo, crystal bracelets, and art toys. AI-assisted design, worldwide shipping. Turn your photo into a 3D collectible.`，且各仅一个 | UI/API |
-| 文案/SEO | Hero 的页面主题 | P0 | 全页仅一个 H1，精确为 `Create a Custom Figurine From Your Photo`；H1 为 SSR HTML 真实文字，非图片叠字；每个 slide 标题为 H2 或普通文字 | UI/API |
+| 文案/SEO | Hero 的页面主题 | P0 | 全页仅一个 H1，精确为 `Create Your Own Custom Figurine From a Photo`；H1 为 SSR HTML 真实文字，非图片叠字；每个 slide 标题为 H2 或普通文字 | UI/API |
 | 技术文档 | Logo 无障碍文本 | P0 | Logo 图片 `alt` 精确为 `JuJuBit - Custom 3D Figurines`；Logo 链接到 `/` | UI |
-| PRD/文案 | Header 入口及品类二级菜单 | P0 | Header 有真实文字 `<a>`；Create、Templates、Gallery、How It Works 及 Categories 的六个品类链接均可访问；不渲染三级菜单 | UI/API |
-| 文案/PRD | Header URL 基准 | P0 | Create 使用主题实际配置的有效地址；Templates=`/collections/templates-create-your-own`，Gallery=`/pages/gallery`，How It Works=`/pages/how-it-works`；依赖页不能为 404 | UI/API |
+| PRD/文案 | Header 入口及品类二级菜单 | P0 | Header 有真实文字 `<a>`；一级导航均可点击；Categories 包含 Art Toys、FDM、Free Ship、Crystal Bracelets、Custom Keycaps、Photo Board 六个二级入口；不渲染三级菜单 | UI/API |
+| 文案/PRD | Header URL 基准 | P0 | Create 使用主题实际配置的有效地址；Templates=`/collections/templates-create-your-own`，How It Works=`/pages/how-it-works`；品类链接分别为 `art-toy`、`fdm`、Free Ship 实际配置地址、`zodiac-x-tarot`、`keycaps`、`photo-board` | UI/API |
 | PRD/文案 | 首屏品类与 Category | P0 | 首屏展示组包含 Custom Figurines、Crystal Bracelets、Art Toys；不展示 Pillow Cases；Category 默认六卡的锚文本和链接与配置一致 | UI |
-| PRD/文案 | Category 默认 URL | P1 | 六卡 URL 分别为 `custom-figurines`、`crystal-bracelets`、`art-toy`、`keycaps`、`custom-keychains`、`acrylic-standees`；展示名为 Acrylic Boards 时仍使用 `acrylic-standees` URL | UI/API |
+| PRD/文案 | Category 默认 URL | P1 | 六卡 URL 分别为 `custom-figurines`、`zodiac-x-tarot`（Crystal Bracelets）、`art-toy`、`keycaps`、`custom-keychains`、`acrylic-standees`；展示名为 Acrylic Boards 时仍使用 `acrylic-standees` URL | UI/API |
 | 技术文档/文案 | Hero 图片与 CTA | P0 | 首屏媒体优先加载且不使用 `loading=lazy`；产品图 alt 使用描述性文本，装饰背景 `alt=""`；CTA 为真实链接，默认文案 `Create Your Figurine`，并能打开主题实际配置的有效页面 | UI |
 | PRD/文案 | Template Entry | P1 | 卡片名为 HTML 文字；每卡至少一个有意义的 `<a>`；默认风格入口可访问，查看全部链接至 `/collections/templates-create-your-own` | UI/API |
 | PRD/文案 | How It Works 与 HowTo 数据源 | P0 | 四步标题及描述均在 SSR HTML 中可见；若输出 HowTo JSON-LD，Schema 步骤文本与页面对应字段逐字一致 | UI/API |
@@ -142,11 +142,11 @@
 | 用例 ID | 模块 | 优先级 | 前置条件 | 操作步骤 | 预期结果 | 自动化 |
 |---|---|---|---|---|---|---|
 | HOME-SEO-001 | SSR | P0 | 首页可访问 | 使用不执行 JavaScript 的 HTTP 客户端获取首页原始 HTML | 状态码 200；原始 HTML 包含 title、meta description、唯一 H1、主导航、主要 section 标题和真实链接 | API |
-| HOME-SEO-002 | H1 | P0 | Hero 配置多个 slide | 分别检查初始 DOM、轮播后 DOM及原始 HTML | 页面始终只有一个 H1，精确为 `Create a Custom Figurine From Your Photo`；slide 切换不新增或替换页面 H1 | UI/API |
+| HOME-SEO-002 | H1 | P0 | Hero 配置多个 slide | 分别检查初始 DOM、轮播后 DOM及原始 HTML | 页面始终只有一个 H1，精确为 `Create Your Own Custom Figurine From a Photo`；slide 切换不新增或替换页面 H1 | UI/API |
 | HOME-SEO-003 | JSON-LD | P0 | 页面输出结构化数据 | 遍历所有 `application/ld+json` 并解析 | JSON 均可解析；Organization、WebSite、FAQPage、HowTo 类型不重复、不使用空字段，URL 与当前正式域名一致 | UI/API |
 | HOME-SEO-004 | 图片 alt | P1 | 首页所有业务图片已配置 | 收集所有 `img`，区分功能图和装饰图 | 功能图 alt 非空、不重复、不使用文件名；装饰图 alt 为空；所有 alt 不含医疗功效禁用词 | UI |
 | HOME-HDR-001 | Header | P0 | 主菜单按文案配置 | PC 展开 Categories，H5 打开菜单，收集一级/二级入口 | 两端均包含规定入口；入口均为真实 `<a href>`；PC/H5 目标 URL 一致；无三级菜单节点 | UI |
-| HOME-HDR-002 | Header | P0 | Categories 配置六个品类 | 逐个真实点击六个品类链接并记录落地 URL | 展示名和目标集合匹配；Acrylic Boards 落到 `/collections/acrylic-standees`；均非 404/5xx | UI/API |
+| HOME-HDR-002 | Header | P0 | Categories 配置六个品类 | 逐个真实点击六个品类链接并记录落地 URL | Art Toys、FDM、Free Ship、Crystal Bracelets、Custom Keycaps、Photo Board 展示名和目标集合匹配；均非 404/5xx | UI/API |
 | HOME-HDR-003 | Header | P1 | 导航中配置三级菜单 | PC hover、键盘展开及 H5 展开二级菜单 | 第三级不渲染；二级入口仍可聚焦、点击和关闭，布局无溢出 | UI/人工 |
 | HOME-HERO-001 | Hero | P0 | 同一端同时配置图片和视频 | PC/H5 分别加载首页并监控媒体请求和可见元素 | 图片优先展示；视频不自动播放且不抢占 LCP；另一端的媒体不被错误展示 | UI |
 | HOME-HERO-002 | Hero | P1 | PC 或 H5 仅配置一种媒体，另一端为空 | 分别以 769px、768px 加载 | 按最终确认的跨端回退规则展示；无破图、空白容器或重复媒体 | UI/待确认 |
