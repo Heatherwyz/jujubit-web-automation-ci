@@ -71,12 +71,61 @@ class LarkReportTests(unittest.TestCase):
         self.assertEqual(summary["errors"], 1)
         self.assertEqual(summary["skipped"], 1)
         self.assertEqual(summary["rate_limited"], 1)
+        self.assertEqual(summary["rate_limited_skipped"], 0)
+        self.assertEqual(summary["ordinary_skipped"], 1)
         self.assertEqual(summary["duration_seconds"], 91.4)
         self.assertEqual(summary["started_at"], "2026-08-06T09:15:20.123456+08:00")
         self.assertEqual([module["name"] for module in summary["modules"]], ["首页", "购物车"])
         self.assertEqual(summary["modules"][0]["total"], 2)
         self.assertEqual(summary["modules"][1]["total"], 2)
         self.assertEqual(summary["modules"][1]["rate_limited"], 1)
+
+    def test_rate_limited_skips_are_counted_once_and_rendered_as_unfinished(self) -> None:
+        """429 是跳过原因，不应在卡片中与跳过项重复累计。"""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="pytest" tests="4" time="12">
+  <testcase classname="python_playwright.tests.test_home" name="test_ok[pc]" time="1" />
+  <testcase classname="python_playwright.tests.test_home" name="test_requirement[h5]" time="2">
+    <failure message="需求不符合" />
+  </testcase>
+  <testcase classname="python_playwright.tests.test_home" name="test_link_scan[pc]" time="3">
+    <skipped message="HTTP 429 Too Many Requests" />
+  </testcase>
+  <testcase classname="python_playwright.tests.test_home" name="test_optional[h5]" time="4">
+    <skipped message="当前环境未配置" />
+  </testcase>
+</testsuite>
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results_path = Path(temp_dir) / "results.xml"
+            results_path.write_text(xml, encoding="utf-8")
+            summary = read_results(str(results_path))
+
+        self.assertEqual(summary["rate_limited"], 1)
+        self.assertEqual(summary["rate_limited_skipped"], 1)
+        self.assertEqual(summary["ordinary_skipped"], 1)
+        card_text = json.dumps(card_template(summary), ensure_ascii=False)
+        self.assertIn("429 未完成 / 其他跳过", card_text)
+        self.assertIn("1 / 1", card_text)
+        self.assertIn("业务失败", card_text)
+
+    def test_legacy_summary_does_not_double_count_rate_limited_skip(self) -> None:
+        """兼容旧版运行结果时，429 跳过不能再被展示成其他跳过。"""
+        legacy_summary = {
+            "total": 62,
+            "passed": 44,
+            "failed": 16,
+            "errors": 0,
+            "skipped": 2,
+            "rate_limited": 2,
+            "rate_limited_failures": 0,
+            "duration_seconds": 574,
+            "started_at": "",
+            "modules": [],
+        }
+
+        card_text = json.dumps(card_template(legacy_summary), ensure_ascii=False)
+        self.assertIn("2 / 0", card_text)
 
     def test_card_contains_execution_and_module_details(self) -> None:
         summary = {

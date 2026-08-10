@@ -13,11 +13,7 @@ from playwright.sync_api import (
     expect,
 )
 
-from python_playwright.pages.home_page import HomePage
-
-
-class SiteRateLimitError(RuntimeError):
-    """站点或生成接口返回 HTTP 429，业务断言无法继续。"""
+from python_playwright.pages.home_page import HomePage, SiteRateLimitError
 
 
 @dataclass(frozen=True)
@@ -108,12 +104,8 @@ class CartPage:
 
     def open_home(self) -> None:
         """从首页开始主流程，并关闭可能遮挡入口的优惠弹窗。"""
-        try:
-            self.home.open()
-        except AssertionError as error:
-            if "HTTP 429" in str(error):
-                raise SiteRateLimitError(str(error)) from error
-            raise
+        # HomePage 与购物车使用同一个频控异常类型，测试层可统一跳过而非记业务失败。
+        self.home.open()
         self.home.close_welcome_popup()
 
     def open_creator_from_header(self) -> None:

@@ -15,7 +15,7 @@ from html import escape
 import pytest
 from playwright.sync_api import sync_playwright
 
-from python_playwright.pages.home_page import HomePage
+from python_playwright.pages.home_page import HomePage, SiteRateLimitError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -323,7 +323,11 @@ def _show_failure_overlay(page, node, context: dict) -> None:
 def home(page, request):
     """打开首页并返回页面对象，供测试用例调用可复用的页面操作。"""
     instance = HomePage(page, request.config.getoption("--base-url"), request.config)
-    instance.open()
+    try:
+        instance.open()
+    except SiteRateLimitError as error:
+        # 429 不代表页面功能不符合需求；让 pytest、HTML 和飞书统一标为未完成。
+        pytest.skip(str(error))
     return instance
 
 
@@ -331,8 +335,14 @@ def pytest_configure(config):
     """初始化本次运行的计时、报告结果和全局请求限速器。"""
     config._jujubit_started_at = time.time()
     config._jujubit_results = {}
-    config._jujubit_site_pacer = SiteRequestPacer(config.getoption("--pw-request-interval"))
-    config._jujubit_link_pacer = SiteRequestPacer(config.getoption("--pw-link-request-interval"))
+    # 所有访问 jujubit.ai 的动作共用一个节流器。取两种配置的较大值，确保链接扫描
+    # 不会以比首页导航更高的频率打到同一个 Shopify/WAF 出口。
+    interval = max(
+        config.getoption("--pw-request-interval"),
+        config.getoption("--pw-link-request-interval"),
+    )
+    config._jujubit_site_pacer = SiteRequestPacer(interval)
+    config._jujubit_link_probe_cache = {}
 
 
 def pytest_html_report_title(report):
@@ -378,6 +388,18 @@ def pytest_html_results_summary(prefix, summary, postfix, session):
                 f'{escape(item["title"])}</td></tr>'
             )
         return "".join(content) or '<tr><td colspan="2">无</td></tr>'
+
+    def skipped_rows(items):
+        """展示未完成原因，避免把 429 和普通跳过混为一谈。"""
+        content = []
+        for item in items:
+            status = RESULT_LABELS.get(item["outcome"], "⚠ 未知")
+            detail = escape(item.get("detail") or "未提供跳过原因")
+            content.append(
+                f'<tr><td>{status}</td><td>[{escape(str(item["platform"]).upper())}] '
+                f'{escape(item["title"])}</td><td>{detail}</td></tr>'
+            )
+        return "".join(content) or '<tr><td colspan="3">无</td></tr>'
 
     def failure_location(item):
         """生成页面地址、DOM 路径和截图视口说明。"""
@@ -458,6 +480,7 @@ def pytest_html_results_summary(prefix, summary, postfix, session):
             )
         return "".join(content) or '<tr><td colspan="4">无</td></tr>'
 
+    rate_limited_skipped = sum("HTTP 429" in (item.get("detail") or "") for item in skipped)
     prefix.append(
         '<style>#results-table,.controls{display:none}.jujubit-summary{margin:12px 0;border-collapse:collapse;width:100%}'
         '.jujubit-summary td,.jujubit-summary th{border:1px solid #d9dee8;padding:7px;text-align:left}'
@@ -471,9 +494,9 @@ def pytest_html_results_summary(prefix, summary, postfix, session):
         '<table class="jujubit-summary"><thead><tr><th>结果与用例</th><th>页面与错误位置</th><th>错误说明</th><th>截图与录像</th></tr></thead><tbody>'
         f'{failure_rows(failed)}</tbody></table>'
         + (
-            f'<h3>跳过用例（{len(skipped)}）</h3>'
-            '<table class="jujubit-summary"><thead><tr><th>结果</th><th>用例</th></tr></thead><tbody>'
-            f'{simple_rows(skipped)}</tbody></table>'
+            f'<h3>未完成 / 跳过用例（{len(skipped)}，其中因 HTTP 429 未完成 {rate_limited_skipped}）</h3>'
+            '<table class="jujubit-summary"><thead><tr><th>结果</th><th>用例</th><th>原因</th></tr></thead><tbody>'
+            f'{skipped_rows(skipped)}</tbody></table>'
             if skipped
             else ""
         )
@@ -537,6 +560,9 @@ def pytest_runtest_makereport(item, call):
             result_outcome = report.outcome
         elif getattr(report, "wasxfail", None):
             result_outcome = "xfailed" if report.outcome == "skipped" else "xpassed"
+        elif report.skipped:
+            # setup 阶段的 429 会走这里；必须保留为 skipped，不能误写成 error。
+            result_outcome = "skipped"
         else:
             result_outcome = "error"
         item.config._jujubit_results[item.nodeid] = {
@@ -561,7 +587,7 @@ def pytest_runtest_makereport(item, call):
 def _report_detail(report) -> str:
     """把 pytest 的长错误压缩成报告中可读的一行。"""
     detail = str(report.longrepr).replace("\n", " ").strip()
-    if "HTTP 429" in detail:
+    if re.search(r"(?:http\s*)?429|访问频控|rate[ -]?limit", detail, re.I):
         return (
             "站点访问频控（HTTP 429）：本条用例未能执行，不代表页面功能失败。"
             "脚本已自动限速并重试；仍持续出现时请稍后重跑，或使用 "

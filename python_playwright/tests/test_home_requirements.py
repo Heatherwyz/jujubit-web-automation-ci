@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 import pytest
 from playwright.sync_api import Error as PlaywrightError, expect
 
+from python_playwright.pages.home_page import SiteRateLimitError
+
 
 EXPECTED_TITLE = "JuJuBit | Custom Figurines, Crystal Bracelets & Art Toys"
 EXPECTED_DESCRIPTION = (
@@ -202,33 +204,23 @@ def test_configured_internal_links_are_available(home, page, test_platform):
     assert links, "Homepage did not render any configured internal links"
 
     # 全量链接来源于当前首页 DOM；HTTP 扫描用于覆盖隐藏轮播项，真实点击由 REQ-04B 验证。
+    # 同一 URL 在 PC/H5 之间会复用探测结果，避免重复请求被 Shopify/WAF 当作爬虫。
     failures = []
     for url, label in links.items():
-        response = None
-        last_error = None
-        # 公网页面下载偶发超时；第二次使用更长时限，避免把已返回 200 的页面误报为坏链。
-        for timeout in (8_000, 20_000):
-            try:
-                # 批量扫描也需限速；否则测试行为本身可能触发站点的 429 频控。
-                home.pace_link_check_request()
-                response = page.request.get(url, fail_on_status_code=False, timeout=timeout)
-                break
-            except PlaywrightError as error:
-                last_error = error
-        if response is None:
-            summary = str(last_error).split("Call log:", 1)[0].strip()
-            failures.append((label, url, f"请求异常：{summary}"))
+        try:
+            probe = home.probe_internal_link(url)
+        except SiteRateLimitError as error:
+            pytest.skip(str(error))
+        if "error" in probe:
+            failures.append((label, url, f"请求异常：{probe['error']}"))
             continue
-        body = response.text()
+        status = probe["status"]
+        body = probe["body"]
         visible_text = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", body))).strip()
-        if response.status == 429:
-            pytest.skip(
-                "站点访问频控（HTTP 429）：链接扫描未完成，不代表首页链接或页面功能失败。"
-            )
-        if response.status == 404:
+        if status == 404:
             failures.append((label, url, "HTTP 404"))
-        elif response.status >= 500:
-            failures.append((label, url, f"HTTP {response.status}"))
+        elif status >= 500:
+            failures.append((label, url, f"HTTP {status}"))
         elif len(visible_text) < 20:
             failures.append((label, url, "页面内容为空，疑似白屏"))
 
@@ -644,10 +636,10 @@ def test_homepage_image_alt_policy(home, page, test_platform):
 
 def test_core_content_is_present_in_server_html(home, page, test_platform):
     """REQ-15：不执行 JavaScript 的原始首页 HTML 包含核心 SEO 与导航内容。"""
-    home.pace_link_check_request()
-    response = page.request.get(home.base_url, fail_on_status_code=False, timeout=20_000)
-    if response.status == 429:
-        pytest.skip("站点访问频控（HTTP 429）：SSR 检查未完成，不代表页面不可抓取。")
+    try:
+        response = home.get_with_rate_limit_retry(home.base_url, timeout=20_000)
+    except SiteRateLimitError as error:
+        pytest.skip(str(error))
     assert response.status == 200, f"首页原始 HTML 返回 HTTP {response.status}"
     html = response.text()
     normalized = re.sub(r"\s+", " ", unescape(html))

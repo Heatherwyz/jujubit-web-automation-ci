@@ -32,8 +32,8 @@ def pytest_addoption(parser):
     parser.addoption(
         "--pw-link-request-interval",
         type=float,
-        default=0.8,
-        help="批量检查首页站内链接时的最小请求间隔（秒）。",
+        default=4.0,
+        help="批量检查首页站内链接时的最小请求间隔（秒）；与首页导航共用限速器。",
     )
     parser.addoption(
         "--pw-cart-image",

@@ -41,8 +41,9 @@ jobs:
           python -m pip install -r requirements-playwright.txt
           python -m playwright install --with-deps chromium
 
-      - name: 校验飞书报告脚本
-        run: python -m pytest tests/test_send_lark_test_report.py -q
+      - name: 校验报告与频控逻辑
+        # 这些离线单测不访问站点，先验证飞书统计、429 重试和链接缓存逻辑。
+        run: python -m pytest tests -q
 
       - name: 记录测试开始时间
         id: test_meta

@@ -49,15 +49,15 @@ def main() -> int:
         "--pw-platform",
         "all",
         "--pw-record-video",
-        # 站点入口导航至少间隔 6 秒，减少连续访问触发站点 429 的概率。
+        # 首页与站内链接探测共用 6 秒节流，避免 GitHub Runner 的突发访问触发 429。
         "--pw-request-interval",
         "6",
         # 429 时先等待后重试；若仍受限，会在报告中标为站点频控，而非业务用例失败。
         "--pw-429-retries",
         "2",
-        # 链接扫描请求同样限速，避免 REQ-04 的批量校验触发站点频控。
+        # 该值与首页导航保持一致；实际由共享节流器按二者较大值执行。
         "--pw-link-request-interval",
-        "0.8",
+        "6",
         "--pw-artifact-dir",
         str(RUN_DIR),
         "--pw-report-name",

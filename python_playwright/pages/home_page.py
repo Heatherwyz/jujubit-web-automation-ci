@@ -5,9 +5,20 @@
 """
 
 import time
+from typing import Optional
 from urllib.parse import urljoin, urlparse
 
-from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError, expect
+from playwright.sync_api import (
+    Error as PlaywrightError,
+    Locator,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+    expect,
+)
+
+
+class SiteRateLimitError(RuntimeError):
+    """站点返回 HTTP 429，当前用例无法完成业务校验。"""
 
 
 class HomePage:
@@ -32,7 +43,7 @@ class HomePage:
         会自动退避重试；带 ``--pw-manual-verification`` 时会显示浏览器，允许
         使用者手动完成网站要求的验证后再继续，脚本不会自动绕过验证。
         """
-        retries = max(0, self.config.getoption("--pw-429-retries"))
+        retries = self._rate_limit_retries()
         manual_verification = self.config.getoption("--pw-manual-verification")
         # 人工模式在首次 429 时立即交给使用者确认；普通模式才按退避策略重试。
         total_attempts = 2 if manual_verification else retries + 1
@@ -47,11 +58,11 @@ class HomePage:
                     continue
                 if not manual_verification and attempt < retries:
                     # 递增退避比立即重试更容易让站点解除频控，也避免继续放大请求量。
-                    delay = min(15 * (2**attempt), 60)
-                    print(f"首页触发 HTTP 429，等待 {delay} 秒后第 {attempt + 1} 次重试。")
+                    delay = self._retry_delay(attempt, response.headers.get("retry-after"))
+                    print(f"首页触发 HTTP 429，等待 {delay:g} 秒后第 {attempt + 1} 次重试。")
                     time.sleep(delay)
                     continue
-                raise AssertionError(
+                raise SiteRateLimitError(
                     "首页访问被站点频控拦截：HTTP 429。"
                     "这不是页面功能缺陷；请稍后重试，或用 "
                     "`.venv/bin/python run_all.py --manual-verification` "
@@ -68,17 +79,95 @@ class HomePage:
                 if attempt == total_attempts - 1:
                     raise
 
+    def _rate_limit_retries(self) -> int:
+        """读取本次运行允许的 429 自动重试次数。"""
+        return max(0, self.config.getoption("--pw-429-retries"))
+
+    def _retry_delay(self, attempt: int, retry_after: Optional[str] = None) -> float:
+        """优先遵循站点 Retry-After；缺失或异常时使用有界指数退避。"""
+        try:
+            delay = float(retry_after or "")
+            if delay >= 0:
+                return min(delay, 90.0)
+        except (TypeError, ValueError):
+            pass
+        return min(15.0 * (2**attempt), 60.0)
+
     def _pace_site_request(self) -> None:
-        """在不同用例之间保留间隔，降低连续打开首页被限流的概率。"""
+        """所有首页和站内链接请求共用一个节流器，降低连续访问频控风险。"""
         pacer = getattr(self.config, "_jujubit_site_pacer", None)
         if pacer is not None:
             pacer.wait()
 
     def pace_link_check_request(self) -> None:
-        """在批量站内链接检查前限速，避免扫描本身触发站点 429。"""
-        pacer = getattr(self.config, "_jujubit_link_pacer", None)
-        if pacer is not None:
-            pacer.wait()
+        """兼容旧调用：批量扫描也使用与首页导航相同的全局限速器。"""
+        self._pace_site_request()
+
+    def get_with_rate_limit_retry(self, url: str, *, timeout: int):
+        """以全局限速和退避重试获取站内页面。
+
+        首页 fixture 与 REQ-04/REQ-15 的 HTTP 探测统一走这里：相同 Runner
+        出口 IP 下不会出现“链接扫描刚结束就立即打开首页”的突发请求。重试耗尽
+        时抛出专用异常，由 pytest 标记为“因 429 未完成”，而非业务失败。
+        """
+        retries = self._rate_limit_retries()
+        for attempt in range(retries + 1):
+            self._pace_site_request()
+            try:
+                response = self.page.request.get(
+                    url,
+                    fail_on_status_code=False,
+                    timeout=timeout,
+                )
+            except PlaywrightError:
+                # 网络/超时错误仍由调用方按原逻辑记录为页面检查异常，不能误标为 429。
+                raise
+            if response.status != 429:
+                return response
+            if attempt < retries:
+                delay = self._retry_delay(attempt, response.headers.get("retry-after"))
+                print(f"{url} 收到 HTTP 429，等待 {delay:g} 秒后第 {attempt + 1} 次重试。")
+                time.sleep(delay)
+        raise SiteRateLimitError(
+            f"站点访问频控（HTTP 429）：{url} 在 {retries + 1} 次请求后仍被限制；"
+            "本条用例未完成业务校验，不代表页面功能失败。"
+        )
+
+    def probe_internal_link(self, url: str) -> dict:
+        """探测首页实际配置的站内链接，并在 PC/H5 间复用同一结果。
+
+        两个端的 DOM 仍会分别采集和校验；缓存只避免同一个 URL 被重复下载两次。
+        这样既不降低链接覆盖，又能减少 Shopify/WAF 将自动化当成批量爬取的风险。
+        """
+        cache = getattr(self.config, "_jujubit_link_probe_cache", {})
+        if url in cache:
+            cached = cache[url]
+            if cached.get("rate_limited"):
+                raise SiteRateLimitError(cached["rate_limited"])
+            return cached
+
+        last_error = None
+        # 公网页面下载偶发超时；第二次使用更长时限，避免把已返回 200 的页面误报为坏链。
+        for timeout in (8_000, 20_000):
+            try:
+                response = self.get_with_rate_limit_retry(url, timeout=timeout)
+                result = {"status": response.status, "body": response.text()}
+                cache[url] = result
+                return result
+            except SiteRateLimitError as error:
+                # 本次套件内同一 URL 不再继续撞限流；后续端会得到同一“未完成”结论。
+                cache[url] = {"rate_limited": str(error)}
+                raise
+            except PlaywrightError as error:
+                last_error = error
+
+        result = {
+            "error": str(last_error).split("Call log:", 1)[0].strip()
+            if last_error
+            else "未取得响应",
+        }
+        # 网络超时是瞬态环境问题，不能跨 PC/H5 固化为相同失败；下一端仍可独立重试。
+        return result
 
     def _wait_for_manual_verification(self) -> None:
         """暂停 pytest，等待使用者在可见浏览器中自主完成网站验证。"""

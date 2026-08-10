@@ -30,7 +30,13 @@ SUMMARY_KEYS = (
     "errors",
     "skipped",
     "rate_limited",
+    "rate_limited_skipped",
     "rate_limited_failures",
+    "ordinary_skipped",
+)
+RATE_LIMIT_PATTERN = re.compile(
+    r"(?:\bhttp\s*)?\b429\b|访问频控|rate[ -]?limit(?:ed|ing)?|too many requests",
+    re.I,
 )
 MODULE_ORDER = {"首页": 0, "购物车": 1, "其他": 99}
 MODULE_PATTERNS = {
@@ -143,7 +149,7 @@ def _case_result(case: ElementTree.Element) -> tuple[str, bool]:
     for child in children.values():
         detail_parts.extend((child.text or "", child.get("message", "")))
     detail = " ".join(part for part in detail_parts if part)
-    return outcome, "HTTP 429" in detail or "访问频控" in detail
+    return outcome, bool(RATE_LIMIT_PATTERN.search(detail))
 
 
 def _suite_duration(root: ElementTree.Element, cases: list[ElementTree.Element]) -> float:
@@ -182,8 +188,12 @@ def read_results(results_xml: str) -> Dict[str, Any]:
         summary[outcome] += 1
         if rate_limited:
             summary["rate_limited"] += 1
-            if outcome in {"failed", "errors"}:
+            if outcome == "skipped":
+                summary["rate_limited_skipped"] += 1
+            elif outcome in {"failed", "errors"}:
                 summary["rate_limited_failures"] += 1
+        elif outcome == "skipped":
+            summary["ordinary_skipped"] += 1
 
         module_name = module_for_case(case)
         module = modules.setdefault(
@@ -199,8 +209,12 @@ def read_results(results_xml: str) -> Dict[str, Any]:
         module["duration_seconds"] += _safe_seconds(case.get("time", ""))
         if rate_limited:
             module["rate_limited"] += 1
-            if outcome in {"failed", "errors"}:
+            if outcome == "skipped":
+                module["rate_limited_skipped"] += 1
+            elif outcome in {"failed", "errors"}:
                 module["rate_limited_failures"] += 1
+        elif outcome == "skipped":
+            module["ordinary_skipped"] += 1
 
     suites = list(_elements(root, "testsuite"))
     summary["duration_seconds"] = _suite_duration(root, cases)
@@ -222,6 +236,27 @@ def _business_failures(summary: Dict[str, Any]) -> int:
         summary.get("rate_limited_failures", summary.get("rate_limited", 0))
     )
     return max(0, failed_or_error - rate_limited_failures)
+
+
+def _rate_limited_unfinished(summary: Dict[str, Any]) -> int:
+    """返回因站点 429 未完成的互斥用例数，兼容旧报告中的 error 记录。"""
+    return int(summary.get("rate_limited", 0))
+
+
+def _ordinary_skipped(summary: Dict[str, Any]) -> int:
+    """返回非 429 原因的跳过数；旧格式则从总跳过数中反推。"""
+    skipped = int(summary.get("skipped", 0))
+    if "ordinary_skipped" not in summary:
+        # 旧版 XML 汇总没有细分字段；429 若本身就是 skipped，先从总跳过中扣除，
+        # 避免历史报告在卡片里被重复展示为“429 未完成”和“其他跳过”。
+        rate_limited_skipped = summary.get("rate_limited_skipped")
+        if rate_limited_skipped is None:
+            rate_limited_skipped = min(skipped, int(summary.get("rate_limited", 0)))
+        return max(0, skipped - int(rate_limited_skipped))
+    return max(
+        0,
+        int(summary["ordinary_skipped"]),
+    )
 
 
 def _format_duration(seconds: Any) -> str:
@@ -272,24 +307,26 @@ def _module_lines(summary: Dict[str, Any]) -> str:
     lines = []
     for module in modules:
         business_failures = _business_failures(module)
-        rate_limited = int(module.get("rate_limited", 0))
-        skipped = int(module.get("skipped", 0))
+        rate_limited = _rate_limited_unfinished(module)
+        ordinary_skipped = _ordinary_skipped(module)
         if business_failures:
             state = "失败"
-        elif rate_limited or skipped:
-            state = "需关注"
+        elif rate_limited:
+            state = "受频控影响"
+        elif ordinary_skipped:
+            state = "含跳过"
         else:
             state = "通过"
         details = [
-            f"{int(module.get('passed', 0))}/{int(module.get('total', 0))}",
+            f"通过 {int(module.get('passed', 0))}/{int(module.get('total', 0))}",
             _format_duration(module.get("duration_seconds", 0)),
         ]
         if business_failures:
             details.append(f"业务失败 {business_failures}")
-        if skipped:
-            details.append(f"跳过 {skipped}")
         if rate_limited:
-            details.append(f"429 频控 {rate_limited}")
+            details.append(f"429 未完成 {rate_limited}")
+        if ordinary_skipped:
+            details.append(f"其他跳过 {ordinary_skipped}")
         lines.append(
             f"**{state}｜{module['name']}**　" + " · ".join(details)
         )
@@ -310,8 +347,8 @@ def card_template(
     """生成包含执行信息、模块结果和报告入口的飞书卡片。"""
     total = int(summary.get("total", 0))
     passed = int(summary.get("passed", 0))
-    skipped = int(summary.get("skipped", 0))
-    rate_limited = int(summary.get("rate_limited", 0))
+    rate_limited = _rate_limited_unfinished(summary)
+    ordinary_skipped = _ordinary_skipped(summary)
     business_failures = _business_failures(summary)
     normalized_exit_code = str(exit_code).strip()
     # pytest 的 1 表示“用例有失败”，已由 JUnit 明细解释；2~5 才是进程级异常。
@@ -324,7 +361,7 @@ def card_template(
         color, status = "orange", "未取得测试结果"
     elif rate_limited > 0:
         color, status = "orange", "受站点频控影响"
-    elif skipped > 0:
+    elif ordinary_skipped > 0:
         color, status = "blue", "执行完成（含跳过用例）"
     else:
         color, status = "green", "全部通过"
@@ -335,14 +372,24 @@ def card_template(
             "is_short": True,
             "text": {
                 "tag": "lark_md",
-                "content": f"**通过率**\n{pass_rate:.1f}%（{passed}/{total}）",
+                "content": f"**执行通过率**\n{pass_rate:.1f}%（{passed}/{total}）",
             },
         },
         {
             "is_short": True,
             "text": {
                 "tag": "lark_md",
-                "content": f"**业务失败 / 跳过**\n{business_failures} / {skipped}",
+                "content": f"**业务失败**\n{business_failures}",
+            },
+        },
+        {
+            "is_short": True,
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**429 未完成 / 其他跳过**\n"
+                    f"{rate_limited} / {ordinary_skipped}"
+                ),
             },
         },
         {
@@ -350,13 +397,6 @@ def card_template(
             "text": {
                 "tag": "lark_md",
                 "content": f"**耗时**\n{_format_duration(summary.get('duration_seconds', 0))}",
-            },
-        },
-        {
-            "is_short": True,
-            "text": {
-                "tag": "lark_md",
-                "content": f"**429 频控**\n{rate_limited}",
             },
         },
     ]
@@ -418,7 +458,7 @@ def card_template(
                 "elements": [
                     {
                         "tag": "plain_text",
-                        "content": "HTTP 429 表示站点访问频控；相关用例未完成业务校验，不按页面功能缺陷统计。",
+                        "content": "HTTP 429 表示站点访问频控；该项已单列为“429 未完成”，不与业务失败或其他跳过重复统计。",
                     }
                 ],
             }
