@@ -15,6 +15,7 @@ from html import escape
 import pytest
 from playwright.sync_api import sync_playwright
 
+from python_playwright.cart_cases import CART_CASES_BY_FUNCTION
 from python_playwright.pages.home_page import HomePage, SiteRateLimitError
 
 
@@ -54,9 +55,10 @@ CASE_TITLES = {
     "test_homepage_json_ld_is_valid_and_matches_faq": "REQ-13: JSON-LD 可解析且 FAQ 与页面同源",
     "test_homepage_image_alt_policy": "REQ-14: 首页图片 alt 符合 SEO 与合规要求",
     "test_core_content_is_present_in_server_html": "REQ-15: 原始 HTML 包含核心 SEO、导航与区块内容",
-    "test_cart_tc01_create_gallery_drawer_full_cart_checkout": (
-        "CART-E2E: 创作模型加购后半屏/全屏购物车均可进入 Checkout"
-    ),
+    **{
+        function_name: case.report_title
+        for function_name, case in CART_CASES_BY_FUNCTION.items()
+    },
 }
 
 RESULT_LABELS = {

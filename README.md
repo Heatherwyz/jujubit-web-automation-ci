@@ -155,11 +155,26 @@ RESULTS_XML=artifacts/runs/<时间戳>/results.xml \
 
 ### 购物车主流程
 
-`python_playwright/tests/test_cart.py` 只生成一次模型，并在同一条主流程中验证 Gallery
-的 2D/3D 结果、半屏购物车、100 件数量上限对应的 `99+` 角标、半屏 Checkout、全屏购物车
-和全屏 Checkout。默认测试图片来自 JuJuBit CDN，也可以通过 `--pw-cart-image` 传入本地图片
-或其他图片 URL；生成等待上限通过 `--pw-generation-timeout`（秒）调整。
+`python_playwright/tests/test_cart.py` 包含 15 个独立逻辑函数；每个函数按 PC/H5 参数化，
+完整执行会在报告中生成 30 条购物车记录。用例覆盖 Create、Gallery 的 2D/3D 结果、半屏与
+全屏购物车、Checkout、角标、数量与金额联动、包邮临界值、空态、视图一致性和失败请求保护。
+
+只有 `CART-02` 会真实上传图片并发起生成；其余购物车用例独立清空购物车后复用账号 Gallery
+中已有的成功资产，不依赖前序用例遗留状态。默认测试图片来自 JuJuBit CDN，也可以通过
+`--pw-cart-image` 传入本地图片或其他图片 URL；生成等待上限通过
+`--pw-generation-timeout`（秒）调整。
 
 购物车用例使用 `cart_session` 标记；只有 `--pw-storage-state` 指向存在的
 `artifacts/auth/storage-state.json` 时才加载登录态，不会影响首页用例。首次登录需要验证码时，
 请在本地可见浏览器中完成登录后导出该 state 文件，文件已被 `.gitignore` 排除。
+
+15 条用例的 ID、真实函数名、步骤、预期结果及线上最终文案见
+`docs/JuJuBit-购物车-自动化测试用例.md`。该文档由 `python_playwright/cart_cases.py`
+确定性生成；修改结构化清单后执行以下命令同步：
+
+```bash
+.venv/bin/python scripts/sync_cart_case_docs.py
+```
+
+`tests/test_cart_case_sync.py` 会离线比对结构化清单、真实测试函数、HTML 报告标题映射和
+已提交的 Markdown，防止文档与脚本遗漏或漂移。

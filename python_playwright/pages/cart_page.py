@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import time
+from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import (
@@ -24,6 +25,22 @@ class GeneratedResult:
     image_url: str
 
 
+@dataclass(frozen=True)
+class CartSnapshot:
+    """用于比较半屏、全屏和 Checkout 前数据的一组购物车快照。"""
+
+    title: str
+    variant: str
+    quantity: int
+    subtotal: str
+    shipping: str
+    image_url: str
+
+
+class CartTestDataUnavailable(RuntimeError):
+    """账号中不存在下游用例可复用的已完成 Gallery 资产。"""
+
+
 class CartPage:
     """从首页创作到两种购物车入口和 Checkout 的操作集合。"""
 
@@ -33,6 +50,8 @@ class CartPage:
     CREATOR_PATH = "/products/customize-your-own"
     CHECKOUT_URL = re.compile(r"/checkouts?(?:/|[?#]|$)")
     CART_URL = re.compile(r"/cart(?:[?#]|$)")
+    FREE_SHIPPING_THRESHOLD_CENTS = 9_900
+    EMPTY_CART_COPY = "Your Cart is Empty"
     SHIPPING_COPY = re.compile(
         r"^Add \$[\d,]+(?:\.\d{2})? more to enjoy Free Shipping$"
     )
@@ -70,6 +89,18 @@ class CartPage:
     def header_badge(self):
         return self.page.locator("[data-cart-count]:visible").first
 
+    @property
+    def drawer_panel(self):
+        return self.drawer.locator(".ccd-panel")
+
+    @property
+    def drawer_item(self):
+        return self.drawer.locator(".ccd-item").first
+
+    @property
+    def full_cart_item(self):
+        return self.full_cart.locator(".cc-item").first
+
     def _record_rate_limit(self, response) -> None:
         if response.status != 429:
             return
@@ -102,6 +133,16 @@ class CartPage:
             if not ignore_errors:
                 raise
 
+    def cart_json(self) -> dict[str, Any]:
+        """读取当前 context 的 Shopify cart，用于服务端状态断言。"""
+        response = self.page.request.get(
+            urljoin(f"{self.base_url}/", "cart.js"), timeout=30_000
+        )
+        if response.status == 429:
+            raise SiteRateLimitError("读取购物车时触发站点访问频控（HTTP 429）。")
+        assert response.ok, f"读取购物车失败：HTTP {response.status}"
+        return response.json()
+
     def open_home(self) -> None:
         """从首页开始主流程，并关闭可能遮挡入口的优惠弹窗。"""
         # HomePage 与购物车使用同一个频控异常类型，测试层可统一跳过而非记业务失败。
@@ -118,6 +159,19 @@ class CartPage:
         self._raise_if_rate_limited()
         self._wait_for_creator_ready()
         self.home.close_welcome_popup()
+
+    def assert_creator_controls(self) -> None:
+        """确认创作页真实可操作，而不只验证 URL 已改变。"""
+        root = self.page.locator("#jjb-create-canvas")
+        expect(root).to_have_attribute("data-jjb-create-mount-status", "mounted")
+        expect(self.page.locator("main input[type=file]").first).to_be_attached()
+        expect(self.page.locator("button.jjb-tool--generate")).to_be_attached()
+        expect(
+            root.locator("button").filter(has_text=re.compile(r"^Create$")).first
+        ).to_be_attached()
+        expect(
+            root.locator("button").filter(has_text=re.compile(r"^Gallery$")).first
+        ).to_be_attached()
 
     def _wait_for_creator_ready(self) -> None:
         try:
@@ -237,7 +291,51 @@ class CartPage:
         expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible(
             timeout=10_000
         )
+        # 资源已经就绪后，再确认切换后的实际渲染节点也对用户可见。
+        expect(
+            self.page.locator('[data-view-name="3d"]:visible canvas:visible').first
+        ).to_be_visible(timeout=10_000)
         return GeneratedResult(self.history_total(), image_url)
+
+    def open_existing_gallery_result(self, timeout_seconds: int = 120) -> GeneratedResult:
+        """打开账号中已有的成功资产，供不需要重复生成的购物车 case 复用。"""
+        history_total = self.history_total()
+        if history_total < 1:
+            raise CartTestDataUnavailable(
+                "账号 Gallery 中没有可复用资产；请先让 CART-02 成功生成一次。"
+            )
+        self.open_gallery()
+        deadline = time.monotonic() + max(1, timeout_seconds)
+        try:
+            self._poll_until(
+                self._generated_image_loaded,
+                deadline,
+                "已有 Gallery 资产的 2D 图片加载完成",
+            )
+            # 历史记录可能默认停在 2D；3D 就绪判断只检查当前可见的 renderer。
+            self._visible_button("3D").click()
+            expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible()
+            self._poll_until(
+                self._generated_model_loaded,
+                deadline,
+                "已有 Gallery 资产的 3D 视图可用",
+            )
+        except (AssertionError, PlaywrightError) as error:
+            raise CartTestDataUnavailable(
+                f"账号最新 Gallery 记录不可用于购物车回归：{error}"
+            ) from error
+
+        self._visible_button("2D").click()
+        expect(self.page.locator('[data-view-name="2d"]:visible')).to_be_visible()
+        image_url = self._generated_image_url(visible_only=True)
+        if not image_url:
+            raise CartTestDataUnavailable("已有 Gallery 记录未提供可见 2D 图片。")
+        self._visible_button("3D").click()
+        expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible()
+        expect(
+            self.page.locator('[data-view-name="3d"]:visible canvas:visible').first
+        ).to_be_visible()
+        return GeneratedResult(history_total, image_url)
 
     def _poll_until(self, predicate, deadline: float, description: str) -> None:
         while time.monotonic() < deadline:
@@ -285,33 +383,17 @@ class CartPage:
         )
 
     def _generated_model_loaded(self) -> bool:
-        renderer_ready = bool(
-            self.page.evaluate(
-                """() => [...document.querySelectorAll('[data-view-name="3d"]')]
-                    .some(view => {
-                        const model = view.querySelector('model-viewer[src]');
-                        if (model?.loaded === true) return true;
-                        const canvas = view.querySelector('canvas');
-                        return Boolean(canvas && canvas.width > 0 && canvas.height > 0);
-                    })"""
-            )
-        )
-        if renderer_ready:
-            return True
-
-        # 当前线上组件的 WebGL 渲染面可能位于封装节点内部；3D 按钮只会在
-        # 模型数据可用后解除 opacity-50/cursor-not-allowed 状态。
-        button = self.page.locator("#jjb-create-canvas button:visible").filter(
-            has_text=re.compile(r"^3D$")
-        ).first
-        if not button.count():
+        view = self.page.locator('[data-view-name="3d"]:visible').first
+        if not view.count():
             return False
-        classes = set((button.get_attribute("class") or "").split())
+
+        # Playwright 定位器可以穿透 model-viewer 的开放 Shadow DOM，兼容普通
+        # 模型和 Splat；Loading 遮罩消失后才把已出现的画布视为真正完成。
+        loading = view.get_by_text("Loading 3D Model...", exact=True)
+        renderer = view.locator("canvas:visible")
         return bool(
-            button.get_attribute("disabled") is None
-            and button.get_attribute("aria-disabled") != "true"
-            and "opacity-50" not in classes
-            and "cursor-not-allowed" not in classes
+            not loading.count()
+            and renderer.count()
         )
 
     def _visible_button(self, name: str):
@@ -360,30 +442,196 @@ class CartPage:
     def assert_drawer_cart(self, quantity: int) -> None:
         """校验半屏购物车商品、金额、包邮与 Checkout 件数。"""
         expect(self.drawer).to_be_visible()
+        expect(self.drawer.locator(".ccd-title")).to_have_text("Cart")
+        expect(self.drawer.locator(".ccd-close")).to_be_visible()
         expect(self.drawer.locator(".ccd-item")).to_have_count(1)
-        self._assert_cart_image_loaded(self.drawer.locator(".ccd-item img").first)
+        self._assert_cart_image_loaded(self.drawer_item.locator(".ccd-item-img"))
+        expect(self.drawer_item.locator(".ccd-item-title")).to_have_text(re.compile(r"\S"))
+        expect(self.drawer_item.locator(".ccd-item-variant")).to_have_text(
+            re.compile(r"\S+\s*:\s*\S+")
+        )
+        expect(self.drawer_item.locator(".ccd-item-price")).to_have_text(
+            re.compile(r"^\$[\d,]+(?:\.\d{2})?$")
+        )
         expect(self.drawer.locator(".ccd-subtotal-val")).to_have_text(
             re.compile(r"^\$[\d,]+(?:\.\d{2})?$")
         )
         expect(self.drawer.locator(".ccd-qty-num")).to_have_value(str(quantity))
         expect(self.drawer.locator(".ccd-checkout")).to_have_text(f"Checkout ({quantity})")
         self._assert_shipping_copy(self.drawer.locator(".ccd-shipping-text"))
+        self.assert_header_badge(quantity)
 
-    def set_drawer_quantity(self, quantity: int) -> None:
-        """直接输入单 SKU 上限 100，验证 99+ 边界而不连点 99 次。"""
-        assert quantity == 100, "本主流程只使用需求明确的单 SKU 上限 100"
-        quantity_input = self.drawer.locator(".ccd-qty-num")
-        quantity_input.fill(str(quantity))
-        quantity_input.press("Enter")
-        expect(self.drawer.locator(".ccd-checkout")).to_have_text(
-            f"Checkout ({quantity})", timeout=30_000
-        )
-        expect(quantity_input).to_have_value(str(quantity))
+    def assert_drawer_layout(self, platform: str) -> None:
+        """半屏面板必须处于视口内，并符合线上 PC/H5 宽度规则。"""
+        box = self.drawer_panel.bounding_box()
+        viewport = self.page.viewport_size
+        assert box and viewport, "无法取得购物车半屏面板或视口尺寸"
+        assert 0 <= box["x"] < viewport["width"]
+        assert box["x"] + box["width"] <= viewport["width"] + 1
+        assert box["height"] <= viewport["height"] + 1
+        expected_width = 350 if platform == "h5" else 450
+        assert abs(box["width"] - min(expected_width, viewport["width"] * 0.95)) <= 2
+
+    def assert_header_badge(self, quantity: int) -> None:
+        """按 0、1-99、100+ 的线上规则校验 Header 角标。"""
+        if quantity <= 0:
+            expect(self.header_badge).not_to_be_visible()
+            return
         expect(self.header_badge).to_be_visible()
-        expect(self.header_badge).to_have_text("99+")
-        expect(self.drawer.locator(".ccd-shipping-text")).to_have_text(
-            self.QUALIFIED_SHIPPING_COPY
+        expect(self.header_badge).to_have_text("99+" if quantity >= 100 else str(quantity))
+
+    def set_drawer_quantity(
+        self, quantity: int, *, expected_quantity: Optional[int] = None
+    ) -> int:
+        """直接提交数量，并等待服务端 cart/change.js 与整套 UI 联动完成。"""
+        assert quantity >= 0, "数量输入不能为负数"
+        expected_quantity = (
+            min(quantity, 100) if expected_quantity is None else expected_quantity
         )
+        quantity_input = self.drawer.locator(".ccd-qty-num")
+        with self.page.expect_response(
+            lambda response: "/cart/change.js" in response.url, timeout=30_000
+        ) as response_info:
+            quantity_input.fill(str(quantity))
+            quantity_input.press("Enter")
+        response = response_info.value
+        if response.status == 429:
+            raise SiteRateLimitError("修改购物车数量时触发 HTTP 429。")
+        assert response.ok, f"修改购物车数量失败：HTTP {response.status}"
+        if expected_quantity == 0:
+            self.assert_empty_drawer()
+        else:
+            expect(self.drawer.locator(".ccd-checkout")).to_have_text(
+                f"Checkout ({expected_quantity})", timeout=30_000
+            )
+            expect(quantity_input).to_have_value(str(expected_quantity))
+            self.assert_header_badge(expected_quantity)
+        return expected_quantity
+
+    def click_drawer_quantity(self, action: str, expected_quantity: int) -> None:
+        """点击加号/减号，并等待数量和汇总完成更新。"""
+        assert action in {"increase", "decrease"}
+        button = self.drawer.locator(f'.ccd-qty-btn[data-action="{action}"]')
+        expect(button).to_be_enabled()
+        with self.page.expect_response(
+            lambda response: "/cart/change.js" in response.url, timeout=30_000
+        ) as response_info:
+            button.click()
+        response = response_info.value
+        if response.status == 429:
+            raise SiteRateLimitError("点击购物车数量按钮时触发 HTTP 429。")
+        assert response.ok, f"点击购物车数量按钮失败：HTTP {response.status}"
+        if expected_quantity == 0:
+            self.assert_empty_drawer()
+            return
+        expect(self.drawer.locator(".ccd-qty-num")).to_have_value(
+            str(expected_quantity), timeout=30_000
+        )
+        expect(self.drawer.locator(".ccd-checkout")).to_have_text(
+            f"Checkout ({expected_quantity})"
+        )
+        self.assert_header_badge(expected_quantity)
+        self._assert_shipping_copy(self.drawer.locator(".ccd-shipping-text"))
+
+    def assert_drawer_quantity_control(self, quantity: int) -> None:
+        """数量 1 显示垃圾桶，2-99 显示减号，100 时加号禁用。"""
+        decrease = self.drawer.locator('.ccd-qty-btn[data-action="decrease"]')
+        increase = self.drawer.locator('.ccd-qty-btn[data-action="increase"]')
+        expect(decrease).to_be_visible()
+        expect(increase).to_be_visible()
+        if quantity == 1:
+            assert decrease.locator("path").count() > 0, "数量 1 时未展示垃圾桶图标"
+            assert decrease.locator("line").count() == 0, "数量 1 时仍展示减号"
+        else:
+            assert decrease.locator("line").count() > 0, "数量大于 1 时未展示减号"
+        if quantity >= 100:
+            expect(increase).to_be_disabled()
+        else:
+            expect(increase).to_be_enabled()
+
+    def close_drawer(self) -> None:
+        """关闭半屏购物车，但保留服务端购物车数据。"""
+        expect(self.drawer.locator(".ccd-close")).to_be_visible()
+        self.drawer.locator(".ccd-close").click()
+        expect(self.drawer).not_to_be_visible()
+
+    def drawer_snapshot(self) -> CartSnapshot:
+        """读取半屏购物车的用户可见数据。"""
+        self.assert_drawer_cart(int(self.drawer.locator(".ccd-qty-num").input_value()))
+        return CartSnapshot(
+            title=self._normalized_text(self.drawer_item.locator(".ccd-item-title")),
+            variant=self._normalized_text(self.drawer_item.locator(".ccd-item-variant")),
+            quantity=int(self.drawer.locator(".ccd-qty-num").input_value()),
+            subtotal=self._normalized_text(self.drawer.locator(".ccd-subtotal-val")),
+            shipping=self._shipping_text(self.drawer.locator(".ccd-shipping-text")),
+            image_url=self.drawer_item.locator(".ccd-item-img").get_attribute("src") or "",
+        )
+
+    def assert_drawer_discount_fields(self) -> None:
+        """优惠字段按线上数据条件显示，不把无优惠商品误判为缺字段。"""
+        savings_row = self.drawer.locator(".ccd-row-savings")
+        if savings_row.is_visible():
+            expect(savings_row.locator(".ccd-savings-label")).to_have_text("You Save")
+            expect(savings_row.locator(".ccd-savings-val")).to_have_text(
+                re.compile(r"^\$[\d,]+(?:\.\d{2})?$")
+            )
+            expect(self.drawer_item.locator(".ccd-item-original")).to_have_text(
+                re.compile(r"^\$[\d,]+(?:\.\d{2})?$")
+            )
+            expect(self.drawer_item.locator(".ccd-item-discount")).to_have_text(
+                re.compile(r"^Save \$[\d,]+(?:\.\d{2})?$")
+            )
+
+    def assert_empty_drawer(self) -> None:
+        """校验线上最终空态文案、包邮状态和不可结算状态。"""
+        expect(self.drawer).to_be_visible()
+        expect(self.drawer.locator(".ccd-item")).to_have_count(0, timeout=30_000)
+        expect(self.drawer.locator(".ccd-empty.is-visible")).to_be_visible()
+        expect(self.drawer.locator(".ccd-empty-img")).to_be_visible()
+        expect(self.drawer.locator(".ccd-empty-label")).to_have_text(self.EMPTY_CART_COPY)
+        expect(self.drawer.locator(".ccd-shipping-text")).to_have_text(
+            "Add $99.00 more to enjoy Free Shipping"
+        )
+        expect(self.drawer.locator(".ccd-shipping-fill")).to_have_attribute(
+            "style", re.compile(r"width:\s*0%")
+        )
+        expect(self.drawer.locator(".ccd-checkout")).to_be_disabled()
+        self.assert_header_badge(0)
+
+    def set_shipping_boundary_total(self, total_cents: int) -> None:
+        """只改前端组件 subtotal，稳定覆盖无法用真实 SKU 造出的分币边界。"""
+        assert total_cents >= 0
+        self.page.wait_for_function(
+            "() => customElements.get('custom-cart-drawer') !== undefined",
+            timeout=30_000,
+        )
+        self.page.evaluate(
+            """total => {
+                const host = document.querySelector('custom-cart-drawer');
+                if (!host) throw new Error('custom-cart-drawer is missing');
+                host.cart = { ...(host.cart || {}), total_price: total };
+                host.updateShippingBar();
+                host.open();
+            }""",
+            total_cents,
+        )
+        expect(self.drawer).to_be_visible()
+
+    def assert_shipping_boundary(self, total_cents: int) -> None:
+        """校验包邮临界文案与进度条。"""
+        text = self._shipping_text(self.drawer.locator(".ccd-shipping-text"))
+        width = self.drawer.locator(".ccd-shipping-fill").evaluate(
+            "element => parseFloat(element.style.width || '0')"
+        )
+        if total_cents < self.FREE_SHIPPING_THRESHOLD_CENTS:
+            remaining = self.FREE_SHIPPING_THRESHOLD_CENTS - total_cents
+            assert text == (
+                f"Add ${remaining / 100:.2f} more to enjoy Free Shipping"
+            )
+            assert 0 <= width < 100
+        else:
+            assert text == self.QUALIFIED_SHIPPING_COPY
+            assert width == 100
 
     def checkout_from_drawer(self) -> None:
         self._checkout(self.drawer.locator(".ccd-checkout"), "半屏购物车")
@@ -417,38 +665,284 @@ class CartPage:
             "返回 Gallery 后未恢复刚才生成的 2D 结果"
         )
 
-    def open_full_cart_from_header(self) -> None:
-        """点击 Gallery 右上角购物车按钮，并确认进入全屏 /cart。"""
+    def open_full_cart_from_header(
+        self, expected_quantity: Optional[int] = None
+    ) -> None:
+        """点击 Header Cart，并确认进入全屏 /cart。"""
         self.home.close_welcome_popup()
-        expect(self.header_badge).to_have_text("99+")
         expect(self.header_cart).to_be_visible()
+        if expected_quantity is not None:
+            self.assert_header_badge(expected_quantity)
+        elif self.header_badge.count() and self.header_badge.is_visible():
+            expect(self.header_badge).to_have_text(re.compile(r"^(?:[1-9]\d?|99\+)$"))
         self.header_cart.click()
         self.page.wait_for_url(self.CART_URL, timeout=30_000)
         self._raise_if_rate_limited()
+        self.home.close_welcome_popup()
         expect(self.full_cart).to_be_visible(timeout=30_000)
 
     def assert_full_cart_page(self, quantity: int) -> None:
-        """校验全屏购物车保留同一商品、数量和 Checkout 能力。"""
+        """兼容主流程调用，校验全屏购物车的完整内容。"""
+        self.assert_full_cart_content(quantity)
+
+    def assert_full_cart_content(self, quantity: int) -> None:
+        """校验全屏购物车商品、汇总、包邮区和 Checkout 控件。"""
+        expect(self.full_cart).to_be_visible()
+        expect(self.full_cart.locator(".cc-title")).to_have_text("Cart")
         expect(self.full_cart.locator(".cc-close")).to_be_visible()
+        expect(self.full_cart.locator(".cc-close")).to_have_attribute(
+            "aria-label", "Close"
+        )
         expect(self.full_cart.locator(".cc-item")).to_have_count(1)
-        self._assert_cart_image_loaded(self.full_cart.locator(".cc-item-img").first)
+        self._assert_cart_image_loaded(self.full_cart_item.locator(".cc-item-img"))
+        expect(self.full_cart_item.locator(".cc-item-title")).to_have_text(
+            re.compile(r"\S")
+        )
+        expect(self.full_cart_item.locator(".cc-item-variant")).to_have_text(
+            re.compile(r"\S+\s*:\s*\S+")
+        )
+        expect(self.full_cart_item.locator(".cc-item-price")).to_have_text(
+            re.compile(r"^\$[\d,]+(?:\.\d{2})?$")
+        )
         expect(self.full_cart.locator(".cc-qty-num")).to_have_value(str(quantity))
         expect(self.full_cart.locator(".cc-subtotal-val")).to_have_text(
             re.compile(r"^\$[\d,]+(?:\.\d{2})?$")
         )
-        expect(self.full_cart.locator(".cc-checkout")).to_have_text(
-            f"Checkout ({quantity})"
+        expect(self.full_cart.locator(".cc-row-subtotal")).to_contain_text("Subtotal")
+        checkout = self.full_cart.locator(".cc-checkout")
+        expect(checkout).to_have_text(f"Checkout ({quantity})", timeout=30_000)
+        expect(checkout).to_be_enabled(timeout=30_000)
+        expect(self.full_cart.locator(".cc-disclaimer")).to_have_text(
+            "Shipping, taxes, and discount codes calculated at checkout."
         )
-        expect(self.full_cart.locator(".cc-checkout")).to_be_enabled()
-        expect(self.full_cart.locator(".cc-shipping-text")).to_have_text(
-            self.QUALIFIED_SHIPPING_COPY
+        self._assert_shipping_copy(self.full_cart.locator(".cc-shipping-text"))
+        self._assert_full_cart_discount_fields()
+
+    def _assert_full_cart_discount_fields(self) -> None:
+        """有优惠时校验全屏购物车的原价、优惠金额和 You Save。"""
+        savings_row = self.full_cart.locator(".cc-row-savings")
+        if savings_row.is_visible():
+            expect(savings_row.locator(".cc-savings-label")).to_have_text("You Save")
+            expect(savings_row.locator(".cc-savings-val")).to_have_text(
+                re.compile(r"^\$[\d,]+(?:\.\d{2})?$")
+            )
+            expect(self.full_cart_item.locator(".cc-item-original")).to_have_text(
+                re.compile(r"^\$[\d,]+(?:\.\d{2})?$")
+            )
+            expect(self.full_cart_item.locator(".cc-item-discount")).to_have_text(
+                re.compile(r"^Save \$[\d,]+(?:\.\d{2})?$")
+            )
+
+    def full_cart_snapshot(self) -> CartSnapshot:
+        """读取全屏购物车的一组用户可见数据。"""
+        quantity = int(self.full_cart.locator(".cc-qty-num").input_value())
+        self.assert_full_cart_content(quantity)
+        return CartSnapshot(
+            title=self._normalized_text(
+                self.full_cart_item.locator(".cc-item-title")
+            ),
+            variant=self._normalized_text(
+                self.full_cart_item.locator(".cc-item-variant")
+            ),
+            quantity=quantity,
+            subtotal=self._normalized_text(
+                self.full_cart.locator(".cc-subtotal-val")
+            ),
+            shipping=self._shipping_text(
+                self.full_cart.locator(".cc-shipping-text")
+            ),
+            image_url=(
+                self.full_cart_item.locator(".cc-item-img").get_attribute("src") or ""
+            ),
         )
+
+    @classmethod
+    def assert_snapshots_equal(
+        cls, expected: CartSnapshot, actual: CartSnapshot
+    ) -> None:
+        """比较两个视图中的核心购物车数据，并输出明确的差异字段。"""
+        for field_name in ("title", "variant", "quantity", "subtotal", "shipping"):
+            expected_value = getattr(expected, field_name)
+            actual_value = getattr(actual, field_name)
+            assert actual_value == expected_value, (
+                f"购物车视图的 {field_name} 不一致："
+                f"expected={expected_value!r}, actual={actual_value!r}"
+            )
+
+        expected_image = cls._normalized_image_path(expected.image_url)
+        actual_image = cls._normalized_image_path(actual.image_url)
+        assert expected_image and actual_image, "购物车快照缺少商品图片地址"
+        assert actual_image == expected_image, (
+            "购物车视图的商品图片不一致："
+            f"expected={expected_image!r}, actual={actual_image!r}"
+        )
+
+    def assert_full_cart_matches(self, expected: CartSnapshot) -> None:
+        """确认全屏购物车与传入的半屏快照一致。"""
+        self.assert_snapshots_equal(expected, self.full_cart_snapshot())
+
+    def close_full_cart(self, expected_url: Optional[str] = None) -> None:
+        """点击全屏 Close，返回同站来源页或首页，并保留购物车。"""
+        current_url = self.page.url
+        referrer = self.page.evaluate("() => document.referrer") or ""
+        current_host = urlparse(current_url).netloc
+        referrer_host = urlparse(referrer).netloc
+        target_url = expected_url
+        if target_url is None:
+            target_url = referrer if referrer and referrer_host == current_host else self.base_url
+        expected_path = urlparse(target_url).path or "/"
+
+        close_button = self.full_cart.locator(".cc-close")
+        expect(close_button).to_be_visible()
+        close_button.click()
+        try:
+            self.page.wait_for_function(
+                "expectedPath => window.location.pathname === expectedPath",
+                expected_path,
+                timeout=30_000,
+            )
+        except PlaywrightTimeoutError as error:
+            self._raise_if_rate_limited()
+            raise AssertionError(
+                "全屏购物车 Close 未返回预期页面："
+                f"expected_path={expected_path!r}, actual={self.page.url!r}"
+            ) from error
+        self._raise_if_rate_limited()
+        self.home.close_welcome_popup()
 
     def checkout_from_full_cart(self) -> None:
         self._checkout(self.full_cart.locator(".cc-checkout"), "全屏购物车")
 
+    def assert_checkout_summary(self, expected: CartSnapshot) -> None:
+        """确认 Checkout 展示进入前的商品、数量和 Subtotal。"""
+        assert self.CHECKOUT_URL.search(urlparse(self.page.url).path), (
+            f"当前不是 Checkout 页面：{self.page.url}"
+        )
+        self.home.close_welcome_popup()
+        self._expand_checkout_summary()
+        main = self.page.locator("main:visible").first
+        expect(main).to_be_visible(timeout=30_000)
+        body = self.page.locator("body")
+        expect(body).to_contain_text(expected.title, timeout=30_000)
+        title_matches = self.page.get_by_text(expected.title, exact=True).all()
+        assert any(match.is_visible() for match in title_matches), (
+            f"Checkout 商品摘要未显示商品标题：{expected.title!r}"
+        )
+        # Shopify 的 PC 订单摘要可能位于 main 外侧的 aside；body.inner_text 只包含
+        # 实际展示的文本，因此可以同时覆盖 PC 和移动端展开后的摘要。
+        summary_text = self._normalized_text(body)
+
+        expected_money = self._normalized_money(expected.subtotal)
+        actual_money = self._normalized_money(summary_text)
+        assert expected_money in actual_money, (
+            "Checkout 未展示购物车 Subtotal："
+            f"expected={expected.subtotal!r}, checkout={summary_text!r}"
+        )
+        assert self._checkout_quantity_is_visible(expected.title, expected.quantity), (
+            "Checkout 未展示购物车商品数量："
+            f"title={expected.title!r}, quantity={expected.quantity}"
+        )
+        self.assert_page_integrity()
+
+    def _expand_checkout_summary(self) -> None:
+        """移动端 Checkout 默认可能折叠订单摘要，存在开关时将其展开。"""
+        toggle = self.page.get_by_role(
+            "button",
+            name=re.compile(r"(?:show|view|open).*order summary", re.IGNORECASE),
+        ).first
+        if not toggle.count() or not toggle.is_visible():
+            return
+        if toggle.get_attribute("aria-expanded") != "true":
+            toggle.click()
+
+    def _checkout_quantity_is_visible(self, title: str, quantity: int) -> bool:
+        """在 Checkout 商品行中寻找可见的数量标记。"""
+        title_locator = self.page.get_by_text(title, exact=True)
+        for match in title_locator.all():
+            if not match.is_visible():
+                continue
+            item = match.locator(
+                "xpath=ancestor::*[self::tr or @role='row' "
+                "or contains(@class, 'product') "
+                "or contains(@class, 'line-item')][1]"
+            )
+            if not item.count():
+                continue
+            quantity_nodes = item.locator(
+                ".product__quantity, [class*='quantity'], "
+                "[aria-label*='quantity' i], [data-testid*='quantity']"
+            )
+            for node in quantity_nodes.all():
+                if not node.is_visible():
+                    continue
+                evidence = " ".join(
+                    filter(
+                        None,
+                        (
+                            self._normalized_text(node),
+                            node.get_attribute("aria-label"),
+                            node.get_attribute("value"),
+                        ),
+                    )
+                )
+                if re.search(rf"(?:^|\D){quantity}(?:\D|$)", evidence):
+                    return True
+
+            item_text = self._normalized_text(item)
+            if re.search(
+                rf"\b(?:quantity\s*:?\s*{quantity}|{quantity}\s*[x×])\b",
+                item_text,
+                re.IGNORECASE,
+            ):
+                return True
+        return False
+
+    def assert_page_integrity(
+        self, expected_cart_quantity: Optional[int] = None
+    ) -> None:
+        """失败请求后不得白屏、出现非法值或形成与服务端不一致的 UI。"""
+        body = self.page.locator("body")
+        expect(body).to_be_visible()
+        body_text = self._normalized_text(body)
+        assert body_text, "购物车请求失败后页面变成白屏"
+        assert not re.search(
+            r"(?:\$\s*)?\b(?:nan|null|undefined)\b|"
+            r"checkout\s*\(\s*(?:nan|null|undefined)\s*\)",
+            body_text,
+            re.IGNORECASE,
+        ), f"购物车页面出现 NaN/null/undefined：{body_text!r}"
+        assert not re.search(
+            r"this page (?:isn't|is not) working|http error \d+",
+            body_text,
+            re.IGNORECASE,
+        ), f"购物车请求失败后进入浏览器错误页：{body_text!r}"
+
+        if expected_cart_quantity is None:
+            return
+        actual_quantity = int(self.cart_json().get("item_count", 0))
+        assert actual_quantity == expected_cart_quantity, (
+            "购物车服务端数量与预期不一致："
+            f"expected={expected_cart_quantity}, actual={actual_quantity}"
+        )
+        self.assert_header_badge(expected_cart_quantity)
+        if self.drawer.is_visible():
+            if expected_cart_quantity == 0:
+                expect(self.drawer.locator(".ccd-item")).to_have_count(0)
+            else:
+                expect(self.drawer.locator(".ccd-qty-num")).to_have_value(
+                    str(expected_cart_quantity)
+                )
+        if self.full_cart.is_visible():
+            if expected_cart_quantity == 0:
+                expect(self.full_cart.locator(".cc-item")).to_have_count(0)
+            else:
+                expect(self.full_cart.locator(".cc-qty-num")).to_have_value(
+                    str(expected_cart_quantity)
+                )
+
     def _checkout(self, button, source: str) -> None:
         """从指定购物车入口进入 Checkout；有副作用的点击只执行一次。"""
+        self.home.close_welcome_popup()
         expect(button).to_be_visible()
         expect(button).to_be_enabled()
         button.click()
@@ -461,10 +955,35 @@ class CartPage:
         expect(self.page.locator("main:visible").first).to_be_visible(timeout=30_000)
 
     def _assert_shipping_copy(self, locator) -> None:
-        text = " ".join(locator.inner_text().split())
+        text = self._shipping_text(locator)
         assert text == self.QUALIFIED_SHIPPING_COPY or self.SHIPPING_COPY.fullmatch(text), (
             f"购物车包邮文案不符合线上规则：{text!r}"
         )
+
+    @classmethod
+    def _shipping_text(cls, locator) -> str:
+        """去掉包邮成功文案前的装饰字符，保留用户可读正文。"""
+        return cls._normalized_text(locator).lstrip("🎉 ")
+
+    @staticmethod
+    def _normalized_text(locator_or_text) -> str:
+        """统一 DOM 文本中的空白，供跨页面快照比较。"""
+        if isinstance(locator_or_text, str):
+            value = locator_or_text
+        else:
+            value = locator_or_text.inner_text()
+        return " ".join(value.replace("\xa0", " ").split())
+
+    @staticmethod
+    def _normalized_money(text: str) -> str:
+        """金额比较忽略千分位和空白，但保留币种符号与小数。"""
+        return re.sub(r"[\s,]", "", text)
+
+    @staticmethod
+    def _normalized_image_path(image_url: str) -> str:
+        """忽略 CDN 查询参数，比较同一生成图片的稳定路径。"""
+        parsed = urlparse(image_url)
+        return parsed.path or image_url.split("?", 1)[0]
 
     @staticmethod
     def _assert_cart_image_loaded(image) -> None:

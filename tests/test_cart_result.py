@@ -15,56 +15,73 @@ class _ImageLocator:
         return self.image_url
 
 
-class _ModelButtonLocator:
-    """模拟 3D 按钮由禁用到解锁的 class 与属性。"""
+class _CountLocator:
+    """只提供资源就绪判断需要的 count。"""
 
-    def __init__(self, ready: bool):
-        self.ready = ready
-        self.first = self
-
-    def filter(self, **_kwargs):
-        return self
+    def __init__(self, count: int):
+        self._count = count
 
     def count(self) -> int:
-        return 1
-
-    def get_attribute(self, name: str):
-        if name == "class":
-            return "text-[#fe5a12]" if self.ready else "opacity-50 cursor-not-allowed"
-        return None
+        return self._count
 
 
-class _ImagePage:
-    """只实现 2D 图片检查所需的最小 Page 接口。"""
+class _ModelViewLocator(_CountLocator):
+    """模拟当前可见 3D 面板中的 Loading 文案和 canvas。"""
 
-    def __init__(self, hidden_image_url: str = "", model_ready: bool = False):
+    def __init__(self, *, visible: bool, loading: bool, canvas_visible: bool):
+        super().__init__(int(visible))
+        self.first = self
+        self.loading = loading
+        self.canvas_visible = canvas_visible
+
+    def get_by_text(self, _text: str, *, exact: bool):
+        return _CountLocator(int(self.loading and exact))
+
+    def locator(self, selector: str):
+        assert selector == "canvas:visible"
+        return _CountLocator(int(self.canvas_visible))
+
+
+class _ResultPage:
+    """只实现 2D/3D 结果检查所需的最小 Page 接口。"""
+
+    def __init__(
+        self,
+        hidden_image_url: str = "",
+        *,
+        model_view_visible: bool = True,
+        model_loading: bool = False,
+        model_canvas_visible: bool = False,
+    ):
         self.hidden_image_url = hidden_image_url
-        self.model_ready = model_ready
+        self.model_view_visible = model_view_visible
+        self.model_loading = model_loading
+        self.model_canvas_visible = model_canvas_visible
         self.selectors = []
 
     def locator(self, selector: str):
         self.selectors.append(selector)
-        if selector == "#jjb-create-canvas button:visible":
-            return _ModelButtonLocator(self.model_ready)
+        if selector == '[data-view-name="3d"]:visible':
+            return _ModelViewLocator(
+                visible=self.model_view_visible,
+                loading=self.model_loading,
+                canvas_visible=self.model_canvas_visible,
+            )
         # 模拟前端自动切到 3D：图片已加载，但带 :visible 的查询无法找到它。
         image_url = "" if ":visible" in selector else self.hidden_image_url
         return _ImageLocator(image_url)
 
-    def evaluate(self, _script: str) -> bool:
-        # 回归测试走“渲染器封装、按钮解锁”的线上兼容分支。
-        return False
 
+class CartGeneratedResultTests(unittest.TestCase):
+    """保证已完成的 2D/3D 资源不会被误报，加载中资源不会抢跑。"""
 
-class CartGeneratedImageTests(unittest.TestCase):
-    """保证 2D 面板被隐藏时不会把已加载图片误报为超时。"""
-
-    def _cart(self, page: _ImagePage) -> CartPage:
+    def _cart(self, page: _ResultPage) -> CartPage:
         cart = object.__new__(CartPage)
         cart.page = page
         return cart
 
     def test_loaded_image_in_hidden_2d_panel_is_accepted(self) -> None:
-        page = _ImagePage("https://cdn.jujubit.ai/generated/result.png")
+        page = _ResultPage("https://cdn.jujubit.ai/generated/result.png")
 
         loaded = self._cart(page)._generated_image_loaded()
 
@@ -72,21 +89,38 @@ class CartGeneratedImageTests(unittest.TestCase):
         self.assertEqual(page.selectors, ['[data-view-name="2d"] img'])
 
     def test_missing_2d_image_is_not_reported_as_loaded(self) -> None:
-        page = _ImagePage()
+        page = _ResultPage()
 
         loaded = self._cart(page)._generated_image_loaded()
 
         self.assertFalse(loaded)
 
-    def test_unlocked_3d_control_is_reported_as_ready(self) -> None:
-        page = _ImagePage(model_ready=True)
+    def test_visible_3d_canvas_is_reported_as_ready(self) -> None:
+        page = _ResultPage(model_canvas_visible=True)
 
         loaded = self._cart(page)._generated_model_loaded()
 
         self.assertTrue(loaded)
 
-    def test_locked_3d_control_is_not_reported_as_ready(self) -> None:
-        page = _ImagePage(model_ready=False)
+    def test_splat_canvas_waits_for_loading_overlay_to_disappear(self) -> None:
+        page = _ResultPage(model_canvas_visible=True, model_loading=True)
+
+        loaded = self._cart(page)._generated_model_loaded()
+
+        self.assertFalse(loaded)
+
+    def test_hidden_3d_view_is_not_reported_as_ready(self) -> None:
+        page = _ResultPage(
+            model_view_visible=False,
+            model_canvas_visible=True,
+        )
+
+        loaded = self._cart(page)._generated_model_loaded()
+
+        self.assertFalse(loaded)
+
+    def test_missing_3d_renderer_is_not_reported_as_ready(self) -> None:
+        page = _ResultPage()
 
         loaded = self._cart(page)._generated_model_loaded()
 
