@@ -213,26 +213,30 @@ class CartPage:
         )
         self.open_gallery()
 
-        two_d_button = self._visible_button("2D")
-        two_d_button.click()
+        # 生成流程会在 2D 完成后自动切到 3D 构建；资源加载判断不能依赖当前面板可见。
         self._poll_until(
             self._generated_image_loaded,
             deadline,
             "本次结果的 2D 图片加载完成",
         )
-        generated_image = self.page.locator(
-            '[data-view-name="2d"]:visible img[alt="Generated Toy Result"]'
-        ).first
-        image_url = generated_image.get_attribute("src") or ""
-        assert image_url, "2D 生成结果图片缺少 src"
-
         self._poll_until(
             self._generated_model_loaded,
             deadline,
-            "本次结果的 3D model-viewer 或 canvas 加载完成",
+            "本次结果的 3D 视图可用",
         )
+
+        # 两类资源均已完成后再主动切换，分别验证用户实际可以看到 2D 和 3D。
+        self._visible_button("2D").click()
+        expect(self.page.locator('[data-view-name="2d"]:visible')).to_be_visible(
+            timeout=10_000
+        )
+        image_url = self._generated_image_url(visible_only=True)
+        assert image_url, "切换到 2D 后未展示已加载的生成结果图片"
+
         self._visible_button("3D").click()
-        expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible()
+        expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible(
+            timeout=10_000
+        )
         return GeneratedResult(self.history_total(), image_url)
 
     def _poll_until(self, predicate, deadline: float, description: str) -> None:
@@ -252,16 +256,36 @@ class CartPage:
         return next((text for text in self.GENERATION_ERRORS if text in body_text), "")
 
     def _generated_image_loaded(self) -> bool:
-        image = self.page.locator(
-            '[data-view-name="2d"]:visible img[alt="Generated Toy Result"]'
-        ).first
-        return bool(
-            image.count()
-            and image.evaluate("img => img.complete && img.naturalWidth > 0")
+        return bool(self._generated_image_url())
+
+    def _generated_image_url(self, *, visible_only: bool = False) -> str:
+        """返回已加载的 2D 结果地址；生成阶段允许面板被前端自动隐藏。"""
+        selector = (
+            '[data-view-name="2d"]:visible img:visible'
+            if visible_only
+            else '[data-view-name="2d"] img'
+        )
+        return (
+            self.page.locator(selector).evaluate_all(
+                """images => {
+                    const loaded = image => {
+                        const source = image.currentSrc || image.getAttribute('src') || '';
+                        return Boolean(source && image.complete && image.naturalWidth > 0);
+                    };
+                    const preferred = images.find(image =>
+                        image.getAttribute('alt') === 'Generated Toy Result' && loaded(image)
+                    );
+                    const result = preferred || images.find(loaded);
+                    return result
+                        ? (result.currentSrc || result.getAttribute('src') || '')
+                        : '';
+                }"""
+            )
+            or ""
         )
 
     def _generated_model_loaded(self) -> bool:
-        return bool(
+        renderer_ready = bool(
             self.page.evaluate(
                 """() => [...document.querySelectorAll('[data-view-name="3d"]')]
                     .some(view => {
@@ -271,6 +295,23 @@ class CartPage:
                         return Boolean(canvas && canvas.width > 0 && canvas.height > 0);
                     })"""
             )
+        )
+        if renderer_ready:
+            return True
+
+        # 当前线上组件的 WebGL 渲染面可能位于封装节点内部；3D 按钮只会在
+        # 模型数据可用后解除 opacity-50/cursor-not-allowed 状态。
+        button = self.page.locator("#jjb-create-canvas button:visible").filter(
+            has_text=re.compile(r"^3D$")
+        ).first
+        if not button.count():
+            return False
+        classes = set((button.get_attribute("class") or "").split())
+        return bool(
+            button.get_attribute("disabled") is None
+            and button.get_attribute("aria-disabled") != "true"
+            and "opacity-50" not in classes
+            and "cursor-not-allowed" not in classes
         )
 
     def _visible_button(self, name: str):
@@ -363,11 +404,15 @@ class CartPage:
         )
         self.open_gallery()
         self._visible_button("2D").click()
-        image = self.page.locator(
-            '[data-view-name="2d"]:visible img[alt="Generated Toy Result"]'
-        ).first
-        expect(image).to_be_visible(timeout=30_000)
-        actual_url = image.get_attribute("src") or ""
+        expect(self.page.locator('[data-view-name="2d"]:visible')).to_be_visible(
+            timeout=10_000
+        )
+        self._poll_until(
+            lambda: bool(self._generated_image_url(visible_only=True)),
+            time.monotonic() + 30,
+            "返回 Gallery 后 2D 图片可见",
+        )
+        actual_url = self._generated_image_url(visible_only=True)
         assert urlparse(actual_url).path == urlparse(result.image_url).path, (
             "返回 Gallery 后未恢复刚才生成的 2D 结果"
         )
