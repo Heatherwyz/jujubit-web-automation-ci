@@ -98,6 +98,29 @@ Webhook 只从 GitHub Secrets 读取，不会写入代码。通知卡片会以�
 让未登录的群成员直接打开网页，需要另行部署带访问控制的对象存储或报告站点，不建议把
 包含页面截图/录像的报告直接公开。
 
+### 配置购物车登录状态
+
+购物车主流程需要登录态。先在本地可见浏览器中登录 JuJuBit，浏览器关闭后 Playwright
+会把当前登录态写入项目的 `artifacts/auth/storage-state.json`：
+
+```bash
+mkdir -p artifacts/auth
+.venv/bin/playwright codegen \
+  --save-storage=artifacts/auth/storage-state.json \
+  https://jujubit.ai/account/login
+```
+
+然后把文件内容保存为 GitHub Actions Secret。若本机已经登录 GitHub CLI，可直接执行：
+
+```bash
+gh secret set PLAYWRIGHT_STORAGE_STATE_JSON < artifacts/auth/storage-state.json
+```
+
+也可以进入仓库的 **Settings → Secrets and variables → Actions → New repository secret**，
+名称填写 `PLAYWRIGHT_STORAGE_STATE_JSON`，内容粘贴完整 JSON。工作流运行时会在临时 Runner
+中还原为 `artifacts/auth/storage-state.json`，并执行 `run_all.py --include-cart`；该文件包含
+登录 Cookie，已被 `.gitignore` 排除，不能直接提交到 Git 仓库。登录态失效后重复上述步骤更新 Secret。
+
 ### 海外访问与 HTTP 429
 
 GitHub 托管 Runner 的出口地区和 IP 不保证固定，Shopify/WAF 可能返回 429 或人机验证。

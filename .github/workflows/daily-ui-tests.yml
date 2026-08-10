@@ -41,6 +41,21 @@ jobs:
           python -m pip install -r requirements-playwright.txt
           python -m playwright install --with-deps chromium
 
+      - name: 准备购物车登录状态
+        shell: bash
+        env:
+          PLAYWRIGHT_STORAGE_STATE_JSON: ${{ secrets.PLAYWRIGHT_STORAGE_STATE_JSON }}
+        run: |
+          # 登录态包含账号 Cookie，只从 GitHub Secret 写入临时 Runner，不提交到仓库。
+          if [[ -z "$PLAYWRIGHT_STORAGE_STATE_JSON" ]]; then
+            echo "::warning::未配置 PLAYWRIGHT_STORAGE_STATE_JSON，购物车用例将以未登录状态执行。"
+            exit 0
+          fi
+          mkdir -p artifacts/auth
+          printf '%s' "$PLAYWRIGHT_STORAGE_STATE_JSON" > artifacts/auth/storage-state.json
+          python -m json.tool artifacts/auth/storage-state.json >/dev/null
+          chmod 600 artifacts/auth/storage-state.json
+
       - name: 校验报告与频控逻辑
         # 这些离线单测不访问站点，先验证飞书统计、429 重试和链接缓存逻辑。
         run: python -m pytest tests -q
@@ -54,9 +69,9 @@ jobs:
         id: suite
         shell: bash
         run: |
-          # 不在这里立即退出：保证失败时仍能上传报告并推送飞书通知。
+          # 包含首页和购物车全部用例；不在这里立即退出，保证失败时仍能上传报告并推送飞书通知。
           set +e
-          python run_all.py
+          python run_all.py --include-cart
           exit_code=$?
           echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
           exit 0
