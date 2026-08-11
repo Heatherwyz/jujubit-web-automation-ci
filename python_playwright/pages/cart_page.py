@@ -342,7 +342,7 @@ class CartPage:
         expect(generate).to_be_visible()
         expect(generate).to_be_enabled()
         self._pace_cart_request()
-        generate.click()
+        generate.click(no_wait_after=True)
 
     def wait_for_new_gallery_result(
         self, previous_total: int, timeout_seconds: int
@@ -532,7 +532,8 @@ class CartPage:
             timeout=30_000,
         ) as response_info:
             self._pace_cart_request()
-            add_button.click()
+            # 加购是 AJAX 写入；后续以接口响应和抽屉可见性判断，不等待页面导航。
+            add_button.click(no_wait_after=True)
         response = response_info.value
         if response.status == 429:
             reason = "Gallery 加购时触发站点访问频控（HTTP 429）。"
@@ -598,7 +599,7 @@ class CartPage:
         ) as response_info:
             self._pace_cart_request()
             quantity_input.fill(str(quantity))
-            quantity_input.press("Enter")
+            quantity_input.press("Enter", no_wait_after=True)
         response = response_info.value
         if response.status == 429:
             reason = "修改购物车数量时触发站点访问频控（HTTP 429）。"
@@ -624,7 +625,7 @@ class CartPage:
             lambda response: "/cart/change.js" in response.url, timeout=30_000
         ) as response_info:
             self._pace_cart_request()
-            button.click()
+            button.click(no_wait_after=True)
         response = response_info.value
         if response.status == 429:
             reason = "点击购物车数量按钮时触发站点访问频控（HTTP 429）。"
@@ -662,7 +663,7 @@ class CartPage:
     def close_drawer(self) -> None:
         """关闭半屏购物车，但保留服务端购物车数据。"""
         expect(self.drawer.locator(".ccd-close")).to_be_visible()
-        self.drawer.locator(".ccd-close").click()
+        self.drawer.locator(".ccd-close").click(no_wait_after=True)
         expect(self.drawer).not_to_be_visible()
 
     def drawer_snapshot(self) -> CartSnapshot:
@@ -968,7 +969,7 @@ class CartPage:
         if not toggle.count() or not toggle.is_visible():
             return
         if toggle.get_attribute("aria-expanded") != "true":
-            toggle.click()
+            toggle.click(no_wait_after=True)
 
     def _checkout_quantity_is_visible(self, title: str, quantity: int) -> bool:
         """在 Checkout 商品行中寻找可见的数量标记。"""
