@@ -369,16 +369,14 @@ class CartPage:
         )
 
         # 两类资源均已完成后再主动切换，分别验证用户实际可以看到 2D 和 3D。
-        # 2D/3D 是当前页面内的视图切换，不应等待页面导航。GitHub Runner 曾在
-        # 点击已成功且 3D 已渲染后，因误等 scheduled navigation 报 10 秒超时。
-        self._visible_button("2D").click(no_wait_after=True)
+        self._select_result_view("2D")
         expect(self.page.locator('[data-view-name="2d"]:visible')).to_be_visible(
             timeout=10_000
         )
         image_url = self._generated_image_url(visible_only=True)
         assert image_url, "切换到 2D 后未展示已加载的生成结果图片"
 
-        self._visible_button("3D").click(no_wait_after=True)
+        self._select_result_view("3D")
         expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible(
             timeout=10_000
         )
@@ -404,7 +402,7 @@ class CartPage:
                 "已有 Gallery 资产的 2D 图片加载完成",
             )
             # 历史记录可能默认停在 2D；3D 就绪判断只检查当前可见的 renderer。
-            self._visible_button("3D").click(no_wait_after=True)
+            self._select_result_view("3D")
             expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible()
             self._poll_until(
                 self._generated_model_loaded,
@@ -416,12 +414,12 @@ class CartPage:
                 f"账号最新 Gallery 记录不可用于购物车回归：{error}"
             ) from error
 
-        self._visible_button("2D").click(no_wait_after=True)
+        self._select_result_view("2D")
         expect(self.page.locator('[data-view-name="2d"]:visible')).to_be_visible()
         image_url = self._generated_image_url(visible_only=True)
         if not image_url:
             raise CartTestDataUnavailable("已有 Gallery 记录未提供可见 2D 图片。")
-        self._visible_button("3D").click(no_wait_after=True)
+        self._select_result_view("3D")
         expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible()
         expect(
             self.page.locator('[data-view-name="3d"]:visible canvas:visible').first
@@ -493,6 +491,13 @@ class CartPage:
         ).first
         expect(button).to_be_visible()
         return button
+
+    def _select_result_view(self, name: str) -> None:
+        """切换 2D/3D，并由后续可见性断言确认真实结果。"""
+        button = self._visible_button(name)
+        # GitHub Chromium 曾在页面已切换后仍卡在鼠标协议返回；DOM click 只触发
+        # 同一个前端 handler，随后仍严格验证目标面板及图片/canvas，而非强制改 DOM。
+        button.evaluate("element => element.click()")
 
     def open_gallery(self) -> None:
         """切换到 Gallery，并确认当前生成结果区域可交互。"""
@@ -765,7 +770,7 @@ class CartPage:
             "刚生成的 Gallery History 重新加载",
         )
         self.open_gallery()
-        self._visible_button("2D").click(no_wait_after=True)
+        self._select_result_view("2D")
         expect(self.page.locator('[data-view-name="2d"]:visible')).to_be_visible(
             timeout=10_000
         )
