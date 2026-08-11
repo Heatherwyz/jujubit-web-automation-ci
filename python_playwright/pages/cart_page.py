@@ -104,29 +104,101 @@ class CartPage:
     def _record_rate_limit(self, response) -> None:
         if response.status != 429:
             return
-        host = (urlparse(response.url).hostname or "").lower()
-        if host == urlparse(self.base_url).hostname or host.endswith(".jujubit.ai"):
+        parsed = urlparse(response.url)
+        host = (parsed.hostname or "").lower()
+        base = urlparse(self.base_url)
+        # 首页主文档的 429 由 HomePage.open() 按 Retry-After 退避重试；其他
+        # 页面/API/资源的 429 则在下一次关键操作前熔断，避免继续写购物车。
+        if (
+            (host == base.hostname or host.endswith(".jujubit.ai"))
+            and parsed.path != (base.path or "/")
+        ):
             self._rate_limited_urls.append(response.url)
 
     def _raise_if_rate_limited(self) -> None:
         if not self._rate_limited_urls:
             return
         parsed = urlparse(self._rate_limited_urls[-1])
-        raise SiteRateLimitError(
+        reason = (
             "站点访问频控（HTTP 429）："
             f"{parsed.netloc}{parsed.path} 未完成，本条购物车用例不计为业务失败。"
         )
+        self._mark_rate_limited(reason)
+        raise SiteRateLimitError(reason)
+
+    def _mark_rate_limited(self, reason: str) -> None:
+        """打开购物车专属及站点级熔断，阻止后续用例继续放大 429。"""
+        self.config._jujubit_cart_rate_limited = reason
+        self.config._jujubit_site_rate_limited = reason
+
+    def _raise_if_circuit_open(self) -> None:
+        """熔断后不再发送新的购物车请求。"""
+        reason = (
+            getattr(self.config, "_jujubit_cart_rate_limited", "")
+            or getattr(self.config, "_jujubit_site_rate_limited", "")
+        )
+        if reason:
+            raise SiteRateLimitError(reason)
+
+    def _pace_cart_request(self) -> None:
+        """让购物车关键请求与上一条请求之间保留最小间隔。"""
+        # 页面响应监听器可能刚收到异步 429；必须在下一次点击/请求之前消费。
+        self._raise_if_rate_limited()
+        self._raise_if_circuit_open()
+        pacer = getattr(self.config, "_jujubit_cart_pacer", None)
+        if pacer is not None:
+            pacer.wait()
+
+    def _request_with_rate_limit_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        operation: str,
+        **kwargs,
+    ):
+        """仅重试可以安全重复的 GET/清空请求，并遵循 Retry-After。"""
+        parsed = urlparse(url)
+        is_safe_clear = method == "post" and parsed.path.rstrip("/") == "/cart/clear.js"
+        if method != "get" and not is_safe_clear:
+            raise AssertionError(
+                "429 自动重试只允许 GET 或 cart/clear.js；"
+                f"禁止重放可能产生副作用的请求：{method.upper()} {parsed.path}"
+            )
+        retries = max(0, self.config.getoption("--pw-429-retries"))
+        for attempt in range(retries + 1):
+            self._pace_cart_request()
+            response = getattr(self.page.request, method)(url, **kwargs)
+            if response.status != 429:
+                return response
+            if attempt < retries:
+                delay = self.home._retry_delay(
+                    attempt, response.headers.get("retry-after")
+                )
+                print(
+                    f"{operation}触发 HTTP 429，等待 {delay:g} 秒后"
+                    f"第 {attempt + 1} 次重试。"
+                )
+                time.sleep(delay)
+                continue
+            reason = (
+                f"{operation}触发站点访问频控（HTTP 429），"
+                f"{retries + 1} 次请求后仍未解除。"
+            )
+            self._mark_rate_limited(reason)
+            raise SiteRateLimitError(reason)
+        raise AssertionError(f"{operation}请求未返回结果")
 
     def clear_cart(self, *, ignore_errors: bool = False) -> None:
         """清空当前 browser context 的 Shopify 购物车，隔离历史数据。"""
         try:
-            response = self.page.request.post(
+            response = self._request_with_rate_limit_retry(
+                "post",
                 urljoin(f"{self.base_url}/", "cart/clear.js"),
+                operation="清空购物车时",
                 data={},
                 timeout=30_000,
             )
-            if response.status == 429:
-                raise SiteRateLimitError("清空购物车时触发站点访问频控（HTTP 429）。")
             if not response.ok:
                 raise AssertionError(f"清空购物车失败：HTTP {response.status}")
         except (AssertionError, PlaywrightError, SiteRateLimitError):
@@ -135,11 +207,12 @@ class CartPage:
 
     def cart_json(self) -> dict[str, Any]:
         """读取当前 context 的 Shopify cart，用于服务端状态断言。"""
-        response = self.page.request.get(
-            urljoin(f"{self.base_url}/", "cart.js"), timeout=30_000
+        response = self._request_with_rate_limit_retry(
+            "get",
+            urljoin(f"{self.base_url}/", "cart.js"),
+            operation="读取购物车时",
+            timeout=30_000,
         )
-        if response.status == 429:
-            raise SiteRateLimitError("读取购物车时触发站点访问频控（HTTP 429）。")
         assert response.ok, f"读取购物车失败：HTTP {response.status}"
         return response.json()
 
@@ -154,6 +227,7 @@ class CartPage:
         create_link = self.page.locator(".jjb-header__create:visible").first
         expect(create_link).to_be_visible()
         expect(create_link).to_have_attribute("href", self.CREATOR_PATH)
+        self._pace_cart_request()
         create_link.click()
         self.page.wait_for_url(re.compile(r"/products/customize-your-own(?:[?#]|$)"))
         self._raise_if_rate_limited()
@@ -215,13 +289,13 @@ class CartPage:
         if local_path.is_file():
             upload_input.set_input_files(str(local_path))
         elif urlparse(image_source).scheme in {"http", "https"}:
-            response = self.page.request.get(
+            response = self._request_with_rate_limit_retry(
+                "get",
                 image_source,
+                operation="下载购物车测试图片时",
                 fail_on_status_code=False,
                 timeout=60_000,
             )
-            if response.status == 429:
-                raise SiteRateLimitError("下载购物车测试图片时触发 HTTP 429。")
             assert response.ok, (
                 f"购物车测试图片下载失败：HTTP {response.status}，{image_source}"
             )
@@ -253,6 +327,7 @@ class CartPage:
         generate = self.page.locator("button.jjb-tool--generate")
         expect(generate).to_be_visible()
         expect(generate).to_be_enabled()
+        self._pace_cart_request()
         generate.click()
 
     def wait_for_new_gallery_result(
@@ -431,10 +506,13 @@ class CartPage:
             lambda response: "/cart/add.js" in response.url,
             timeout=30_000,
         ) as response_info:
+            self._pace_cart_request()
             add_button.click()
         response = response_info.value
         if response.status == 429:
-            raise SiteRateLimitError("Gallery 加购时触发站点访问频控（HTTP 429）。")
+            reason = "Gallery 加购时触发站点访问频控（HTTP 429）。"
+            self._mark_rate_limited(reason)
+            raise SiteRateLimitError(reason)
         assert response.ok, f"Gallery 加购接口失败：HTTP {response.status}"
         expect(self.drawer).to_be_visible(timeout=30_000)
         assert urlparse(self.page.url).path != "/cart", "Add to Cart 不应直接进入全屏购物车"
@@ -492,11 +570,14 @@ class CartPage:
         with self.page.expect_response(
             lambda response: "/cart/change.js" in response.url, timeout=30_000
         ) as response_info:
+            self._pace_cart_request()
             quantity_input.fill(str(quantity))
             quantity_input.press("Enter")
         response = response_info.value
         if response.status == 429:
-            raise SiteRateLimitError("修改购物车数量时触发 HTTP 429。")
+            reason = "修改购物车数量时触发站点访问频控（HTTP 429）。"
+            self._mark_rate_limited(reason)
+            raise SiteRateLimitError(reason)
         assert response.ok, f"修改购物车数量失败：HTTP {response.status}"
         if expected_quantity == 0:
             self.assert_empty_drawer()
@@ -516,10 +597,13 @@ class CartPage:
         with self.page.expect_response(
             lambda response: "/cart/change.js" in response.url, timeout=30_000
         ) as response_info:
+            self._pace_cart_request()
             button.click()
         response = response_info.value
         if response.status == 429:
-            raise SiteRateLimitError("点击购物车数量按钮时触发 HTTP 429。")
+            reason = "点击购物车数量按钮时触发站点访问频控（HTTP 429）。"
+            self._mark_rate_limited(reason)
+            raise SiteRateLimitError(reason)
         assert response.ok, f"点击购物车数量按钮失败：HTTP {response.status}"
         if expected_quantity == 0:
             self.assert_empty_drawer()
@@ -638,9 +722,12 @@ class CartPage:
 
     def return_to_gallery(self, gallery_url: str, result: GeneratedResult) -> None:
         """从 Checkout 返回刚才的 Gallery，并确认生成记录仍可见。"""
+        self._pace_cart_request()
         response = self.page.goto(gallery_url, wait_until="commit")
         if response is not None and response.status == 429:
-            raise SiteRateLimitError("返回 Gallery 时触发站点访问频控（HTTP 429）。")
+            reason = "返回 Gallery 时触发站点访问频控（HTTP 429）。"
+            self._mark_rate_limited(reason)
+            raise SiteRateLimitError(reason)
         if response is not None and not response.ok:
             raise AssertionError(f"返回 Gallery 失败：HTTP {response.status}")
         self._wait_for_creator_ready()
@@ -675,6 +762,7 @@ class CartPage:
             self.assert_header_badge(expected_quantity)
         elif self.header_badge.count() and self.header_badge.is_visible():
             expect(self.header_badge).to_have_text(re.compile(r"^(?:[1-9]\d?|99\+)$"))
+        self._pace_cart_request()
         self.header_cart.click()
         self.page.wait_for_url(self.CART_URL, timeout=30_000)
         self._raise_if_rate_limited()
@@ -794,6 +882,7 @@ class CartPage:
 
         close_button = self.full_cart.locator(".cc-close")
         expect(close_button).to_be_visible()
+        self._pace_cart_request()
         close_button.click()
         try:
             self.page.wait_for_function(
@@ -945,6 +1034,7 @@ class CartPage:
         self.home.close_welcome_popup()
         expect(button).to_be_visible()
         expect(button).to_be_enabled()
+        self._pace_cart_request()
         button.click()
         try:
             self.page.wait_for_url(self.CHECKOUT_URL, timeout=60_000)

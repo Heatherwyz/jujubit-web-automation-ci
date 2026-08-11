@@ -43,6 +43,9 @@ class HomePage:
         会自动退避重试；带 ``--pw-manual-verification`` 时会显示浏览器，允许
         使用者手动完成网站要求的验证后再继续，脚本不会自动绕过验证。
         """
+        existing_limit = getattr(self.config, "_jujubit_site_rate_limited", "")
+        if existing_limit:
+            raise SiteRateLimitError(existing_limit)
         retries = self._rate_limit_retries()
         manual_verification = self.config.getoption("--pw-manual-verification")
         # 人工模式在首次 429 时立即交给使用者确认；普通模式才按退避策略重试。
@@ -62,12 +65,14 @@ class HomePage:
                     print(f"首页触发 HTTP 429，等待 {delay:g} 秒后第 {attempt + 1} 次重试。")
                     time.sleep(delay)
                     continue
-                raise SiteRateLimitError(
+                reason = (
                     "首页访问被站点频控拦截：HTTP 429。"
                     "这不是页面功能缺陷；请稍后重试，或用 "
                     "`.venv/bin/python run_all.py --manual-verification` "
                     "在可见浏览器中手动完成网站要求的验证后继续。"
                 )
+                self.config._jujubit_site_rate_limited = reason
+                raise SiteRateLimitError(reason)
             if response is not None and not response.ok:
                 raise AssertionError(f"首页请求失败：HTTP {response.status}，{response.url}")
             try:

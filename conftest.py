@@ -27,13 +27,19 @@ def pytest_addoption(parser):
         "--pw-429-retries",
         type=int,
         default=2,
-        help="首页收到 HTTP 429 后的自动等待重试次数。",
+        help="首页及可安全重复请求收到 HTTP 429 后的自动等待重试次数。",
     )
     parser.addoption(
         "--pw-link-request-interval",
         type=float,
         default=4.0,
         help="批量检查首页站内链接时的最小请求间隔（秒）；与首页导航共用限速器。",
+    )
+    parser.addoption(
+        "--pw-cart-request-interval",
+        type=float,
+        default=2.0,
+        help="购物车 API 与关键 UI 操作的最小间隔（秒），用于降低登录态频控。",
     )
     parser.addoption(
         "--pw-cart-image",

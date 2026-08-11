@@ -1,13 +1,21 @@
-name: JuJuBit 首页 UI Tests
+name: JuJuBit 购物车 UI Tests
 
 on:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: "选择购物车执行范围（完整回归会实际操作账号购物车）"
+        required: true
+        default: "smoke"
+        type: choice
+        options:
+          - smoke
+          - full
   schedule:
-    # GitHub Actions 的 cron 使用 UTC；01:00 UTC 即中国标准时间每日 09:00。
-    - cron: "0 1 * * *"
+    # GitHub Actions 的 cron 使用 UTC；02:00 UTC 即中国标准时间每周一 10:00。
+    - cron: "0 2 * * 1"
 
-# 首页和购物车工作流共用同一个并发组，任何时刻只允许一个 Runner 访问站点。
-# 不取消正在执行的完整购物车回归，后来的定时任务会排队，避免重跑又产生一轮登录请求。
+# 与每日首页回归串行执行，避免两个 Runner 从不同出口同时访问同一登录账号。
 concurrency:
   group: jujubit-site-ui-tests
   cancel-in-progress: false
@@ -19,9 +27,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 完整购物车回归包含生成任务；仅在手动选择 full 时执行。
+    timeout-minutes: 150
     env:
-      # 让报告目录和卡片中的时间戳使用中国标准时间，便于和每日 09:00 调度对应。
       TZ: Asia/Shanghai
       PYTHONUNBUFFERED: "1"
 
@@ -42,8 +50,23 @@ jobs:
           python -m pip install -r requirements-playwright.txt
           python -m playwright install --with-deps chromium
 
+      - name: 准备购物车登录状态
+        shell: bash
+        env:
+          PLAYWRIGHT_STORAGE_STATE_JSON: ${{ secrets.PLAYWRIGHT_STORAGE_STATE_JSON }}
+        run: |
+          # 登录态只在此临时 Runner 还原；不提交 storage-state.json 到仓库。
+          if [[ -z "$PLAYWRIGHT_STORAGE_STATE_JSON" ]]; then
+            echo "::error::未配置 PLAYWRIGHT_STORAGE_STATE_JSON，无法安全执行购物车登录回归。"
+            exit 1
+          fi
+          mkdir -p artifacts/auth
+          printf '%s' "$PLAYWRIGHT_STORAGE_STATE_JSON" > artifacts/auth/storage-state.json
+          python -m json.tool artifacts/auth/storage-state.json >/dev/null
+          chmod 600 artifacts/auth/storage-state.json
+
       - name: 校验报告与频控逻辑
-        # 这些离线单测不访问站点，先验证飞书统计、429 重试和链接缓存逻辑。
+        # 离线单测不访问站点，提前发现报告或频控逻辑的回归。
         run: python -m pytest tests -q
 
       - name: 记录测试开始时间
@@ -51,14 +74,32 @@ jobs:
         shell: bash
         run: echo "started_at=$(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$GITHUB_OUTPUT"
 
-      - name: 执行首页 UI 回归
+      - name: 执行购物车 UI 回归
         id: suite
         shell: bash
         run: |
-          # 每日工作流不读取登录态，也不执行购物车；购物车在独立工作流低频执行。
+          # 定时任务只跑 Smoke；完整 30 条购物车记录必须由使用者在 Actions 页面手动选择 full。
           set +e
-          python run_all.py
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            suite="smoke"
+          else
+            suite="${{ inputs.suite }}"
+          fi
+          case "$suite" in
+            smoke)
+              # GitHub 托管 Runner 只跑 PC 代表用例，避免同一登录态再复制一轮 H5 请求。
+              python run_all.py --cart-smoke-only --platform pc --cart-request-interval 6
+              ;;
+            full)
+              python run_all.py --cart-only --cart-request-interval 6
+              ;;
+            *)
+              echo "未知购物车执行范围：$suite" >&2
+              exit 2
+              ;;
+          esac
           exit_code=$?
+          echo "suite=${suite}" >> "$GITHUB_OUTPUT"
           echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
           exit 0
 
@@ -67,7 +108,6 @@ jobs:
         if: always()
         shell: bash
         run: |
-          # run_all.py 每次只创建一个以时间戳命名的目录；只上传该目录，避免把历史报告重复打包。
           run_dir=$(find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort | tail -n 1 || true)
           if [[ -z "$run_dir" ]]; then
             echo "未找到本次运行目录：artifacts/runs" >&2
@@ -80,7 +120,8 @@ jobs:
           echo "results_xml=${run_dir}/results.xml" >> "$GITHUB_OUTPUT"
           if [[ -f "${run_dir}/jujubit-report-${run_id}.html" ]]; then
             {
-              echo "### JuJuBit 自动化测试报告"
+              echo "### JuJuBit 购物车自动化测试报告"
+              echo "- 执行范围：\`${{ steps.suite.outputs.suite }}\`"
               echo "- 本次目录：\`${run_id}\`"
               echo "- HTML 报告和失败录像：见下方 Artifact 下载项"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -91,8 +132,8 @@ jobs:
         if: always() && steps.report.outputs.run_dir != ''
         uses: actions/upload-artifact@v4
         with:
-          # Artifact 名称包含 run_all.py 生成的时间戳，可作为唯一标识。
-          name: jujubit-home-report-${{ steps.report.outputs.run_id }}
+          # 时间戳使每次报告和录像下载项具有唯一名称。
+          name: jujubit-cart-${{ steps.suite.outputs.suite }}-report-${{ steps.report.outputs.run_id }}
           path: ${{ steps.report.outputs.run_dir }}
           if-no-files-found: error
           retention-days: 30
@@ -119,6 +160,5 @@ jobs:
         shell: bash
         run: |
           exit_code="${{ steps.suite.outputs.exit_code }}"
-          # 如果测试进程在生成输出前就崩溃，仍让 Job 明确失败。
           if [[ -z "$exit_code" ]]; then exit_code=1; fi
           exit "$exit_code"

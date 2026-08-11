@@ -17,12 +17,30 @@ python3 -m venv .venv
 .venv/bin/python run_all.py
 ```
 
-购物车端到端用例会真实上传图片、创建一次生成任务并修改购物车，因此默认不执行。
+购物车端到端用例会真实上传图片、创建生成任务并修改购物车，因此默认不执行。
 确认测试环境和账号配额可用后，显式执行首页与购物车全部用例：
 
 ```bash
 .venv/bin/python run_all.py --include-cart
 ```
+
+如只想执行代表性的 4 条购物车逻辑用例（默认 PC/H5 共 8 条记录，且不重复执行首页），运行：
+
+```bash
+.venv/bin/python run_all.py --cart-smoke-only
+```
+
+GitHub 的低频 Smoke 会附加 `--platform pc`，只执行 4 条 PC 记录，避免同一登录态
+立即再复制一轮 H5 请求；完整回归仍同时覆盖 PC/H5。
+
+如只想执行全部 30 条购物车 PC/H5 记录，运行：
+
+```bash
+.venv/bin/python run_all.py --cart-only
+```
+
+`run_all.py` 默认让购物车关键请求相隔 6 秒；如在已获站点允许的专用测试环境中需要调整，
+可附加 `--cart-request-interval <秒数>`。不要把间隔降为 0 来规避 429，这只会增加被频控的概率。
 
 如站点出现 HTTP 429 或网站要求人工确认，可用有界面模式运行：
 
@@ -56,12 +74,17 @@ artifacts/runs/<时间戳>/jujubit-report-<时间戳>.html
 - `run_all.py`：一键运行和按时间戳归档入口。
 - `artifacts/runs/`：历史报告及关联失败视频。
 
-## GitHub Actions 每日运行
+## GitHub Actions 定时运行
 
-项目已经包含 `.github/workflows/daily-ui-tests.yml`，可以在 GitHub 上安装
-Playwright Chromium，执行自动收集的全部 PC/H5 用例，并在每次运行后上传 HTML、截图、
-失败录像和 `results.xml`。工作流默认每天北京时间 09:00（UTC 01:00）执行，也可以在
-仓库的 **Actions → JuJuBit UI Tests → Run workflow** 手动触发。
+项目包含两个 GitHub Actions 工作流，均会在每次运行后上传 HTML、截图、失败录像和 `results.xml`：
+
+| 工作流 | 自动执行 | 手动入口 | 用途 |
+| --- | --- | --- | --- |
+| `JuJuBit 首页 UI Tests` | 每天北京时间 09:00 | **Actions → JuJuBit 首页 UI Tests → Run workflow** | 只执行首页 PC/H5 用例，不读取购物车登录态。 |
+| `JuJuBit 购物车 UI Tests` | 每周一北京时间 10:00（PC Smoke） | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | 手动选择 `smoke`（4 条 PC 代表用例）或 `full`（15 条逻辑用例 / PC-H5 共 30 条记录）。 |
+
+两个工作流会共享同一个并发队列，不会同时从 GitHub Runner 访问站点。日常任务不再运行
+完整购物车回归；只有在 Actions 页面明确选择 `full` 时才会执行全部购物车用例。
 
 ### 第一次推送到 GitHub
 
@@ -117,18 +140,20 @@ gh secret set PLAYWRIGHT_STORAGE_STATE_JSON < artifacts/auth/storage-state.json
 ```
 
 也可以进入仓库的 **Settings → Secrets and variables → Actions → New repository secret**，
-名称填写 `PLAYWRIGHT_STORAGE_STATE_JSON`，内容粘贴完整 JSON。工作流运行时会在临时 Runner
-中还原为 `artifacts/auth/storage-state.json`，并执行 `run_all.py --include-cart`；该文件包含
+名称填写 `PLAYWRIGHT_STORAGE_STATE_JSON`，内容粘贴完整 JSON。只有购物车工作流会在临时 Runner
+中还原为 `artifacts/auth/storage-state.json`，并按选择执行 Smoke 或完整购物车回归；该文件包含
 登录 Cookie，已被 `.gitignore` 排除，不能直接提交到 Git 仓库。登录态失效后重复上述步骤更新 Secret。
 
 ### 海外访问与 HTTP 429
 
 GitHub 托管 Runner 的出口地区和 IP 不保证固定，Shopify/WAF 可能返回 429 或人机验证。
-工作流会让首页与站内链接探测共用限速器、复用 PC/H5 的相同链接探测结果，并在 429 时退避重试；
-重试仍无法完成的用例会明确标记为“429 未完成”，不计为页面功能失败。工作流不会自动绕过 CAPTCHA；无人值守的 GitHub Job 也无法
-等待人工点击确认。若定时任务持续被拦截，建议使用固定海外出口 IP 的 self-hosted
-Runner，并在站点/WAF 中为该测试流量配置受控白名单。这样得到的海外加载和访问结果也更
-稳定、可复现。
+为降低购物车登录流量，项目会把每日首页任务、每周购物车 Smoke 和手动完整购物车回归分开，
+串行排队执行；GitHub Smoke 只跑 PC，购物车 API 还会以 6 秒最小间隔访问，首次持续 429 后剩余购物车记录会直接标记
+为“429 未完成”，不会继续反复登录和撞站点。429 不计为页面功能失败，但表示该轮无法完成验收。
+
+工作流不会自动绕过 CAPTCHA；无人值守的 GitHub Job 也无法等待人工点击确认。若购物车工作流
+仍持续被拦截，可靠的长期方案是使用固定海外出口 IP 的 self-hosted Runner，并在站点/WAF 为该
+测试账号和出口 IP 配置受控白名单。这样得到的海外加载和访问结果也更稳定、可复现。
 
 ### 本地检查通知配置
 

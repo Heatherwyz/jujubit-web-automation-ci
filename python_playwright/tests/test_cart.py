@@ -14,16 +14,24 @@ from python_playwright.pages.cart_page import (
 
 
 @contextmanager
-def _isolated_cart(page, request):
+def _isolated_cart(page, request, *, clear: bool = True):
     """为每条 case 清空购物车，并把环境型前置不足转换为跳过。"""
     cart = CartPage(page, request.config.getoption("--base-url"), request.config)
+    setup_completed = False
     try:
-        cart.clear_cart()
+        if clear:
+            cart.clear_cart()
+        setup_completed = True
         yield cart
+        # 某些 Creator/API 响应会在点击完成后异步返回；离开 case 前消费该 429，
+        # 让本条标记为未完成，并把熔断状态传给后续 fixture。
+        cart._raise_if_rate_limited()
     except (SiteRateLimitError, CartTestDataUnavailable) as error:
         pytest.skip(str(error))
     finally:
-        cart.clear_cart(ignore_errors=True)
+        # 未通过前置清车或已经熔断时，不再补打一条清车请求。
+        if clear and setup_completed:
+            cart.clear_cart(ignore_errors=True)
 
 
 def _open_creator(cart: CartPage) -> None:
@@ -55,15 +63,17 @@ def _fulfill_server_error(route) -> None:
 @pytest.mark.cart_session
 def test_cart_tc01_header_create_opens_creator(page, request, test_platform):
     """CART-01：首页 Header Create 可进入真正可操作的创作页。"""
-    with _isolated_cart(page, request) as cart:
+    with _isolated_cart(page, request, clear=False) as cart:
         _open_creator(cart)
         cart.assert_creator_controls()
 
 
 @pytest.mark.cart_session
+@pytest.mark.cart_smoke
 def test_cart_tc02_upload_result_has_2d_and_3d(page, request, test_platform):
     """CART-02：唯一创建生成任务的 case，校验本次 2D/3D 结果。"""
-    with _isolated_cart(page, request) as cart:
+    # 该用例只生成 Gallery 资产，不读写购物车，无需额外调用 cart/clear.js。
+    with _isolated_cart(page, request, clear=False) as cart:
         _open_creator(cart)
         previous_history_total = cart.history_total()
         cart.upload_image(request.config.getoption("--pw-cart-image"))
@@ -77,6 +87,7 @@ def test_cart_tc02_upload_result_has_2d_and_3d(page, request, test_platform):
 
 
 @pytest.mark.cart_session
+@pytest.mark.cart_smoke
 def test_cart_tc03_gallery_add_opens_drawer(page, request, test_platform):
     """CART-03：Gallery 加购成功后留在创作页并自动打开半屏购物车。"""
     with _isolated_cart(page, request) as cart:
@@ -98,6 +109,7 @@ def test_cart_tc04_drawer_checkout_opens_checkout(page, request, test_platform):
 
 
 @pytest.mark.cart_session
+@pytest.mark.cart_smoke
 def test_cart_tc05_header_opens_full_cart(page, request, test_platform):
     """CART-05：Gallery Header Cart 可打开数据一致的全屏购物车。"""
     with _isolated_cart(page, request) as cart:
@@ -222,6 +234,7 @@ def test_cart_tc13_views_stay_consistent_and_full_cart_closes(
 
 
 @pytest.mark.cart_session
+@pytest.mark.cart_smoke
 def test_cart_tc14_checkout_summary_matches_cart(page, request, test_platform):
     """CART-14：Checkout 订单摘要与进入前的购物车商品、数量和金额一致。"""
     with _isolated_cart(page, request) as cart:

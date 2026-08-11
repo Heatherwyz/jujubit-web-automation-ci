@@ -5,6 +5,7 @@ pytest 会在运行每条 ``test_...`` 用例前自动调用本文件中的夹�
 """
 
 from datetime import datetime
+import json
 from pathlib import Path
 import re
 import shutil
@@ -123,7 +124,18 @@ def page(browser, request, test_platform):
     storage_state = Path(request.config.getoption("--pw-storage-state")).expanduser()
     if not storage_state.is_absolute():
         storage_state = ROOT / storage_state
-    if request.node.get_closest_marker("cart_session") and storage_state.is_file():
+    if request.node.get_closest_marker("cart_session"):
+        # 购物车用例没有登录态时不要先打开首页再逐条失败，否则会把无效配置
+        # 放大成几十次站点请求，并更容易触发 GitHub Runner 的 429。
+        storage_issue = _storage_state_issue(storage_state)
+        if storage_issue:
+            pytest.skip(storage_issue)
+        rate_limit_reason = (
+            getattr(request.config, "_jujubit_cart_rate_limited", "")
+            or getattr(request.config, "_jujubit_site_rate_limited", "")
+        )
+        if rate_limit_reason:
+            pytest.skip(rate_limit_reason)
         # 仅购物车主流程按需复用登录态，避免首页的 Log in 断言受影响。
         options["storage_state"] = str(storage_state)
     if test_platform == "h5":
@@ -197,6 +209,31 @@ def _artifact_dir(config) -> Path:
     """返回本次执行的独立产物目录。"""
     configured = config.getoption("--pw-artifact-dir")
     return Path(configured) if configured else ROOT / "artifacts" / "latest"
+
+
+def _storage_state_issue(path: Path) -> str:
+    """在创建浏览器前检查登录态文件，避免无效登录反复访问站点。"""
+    if not path.is_file():
+        return (
+            "购物车未完成：登录态文件不存在。请配置 GitHub Secret "
+            "PLAYWRIGHT_STORAGE_STATE_JSON，或使用 --pw-storage-state 指向有效文件。"
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return f"购物车未完成：登录态 JSON 无法读取（{error}）。"
+    if not isinstance(payload, dict):
+        return "购物车未完成：登录态 JSON 顶层必须是对象。"
+    cookies = payload.get("cookies") or []
+    origins = payload.get("origins") or []
+    if not cookies and not origins:
+        return "购物车未完成：登录态为空，请重新导出 storage-state.json。"
+    # expiry=0 表示会话 Cookie；只有在所有持久化 Cookie 都过期时才判定失效。
+    now = time.time()
+    persistent = [cookie for cookie in cookies if float(cookie.get("expires") or 0) > 0]
+    if persistent and all(float(cookie.get("expires") or 0) <= now for cookie in persistent):
+        return "购物车未完成：storage-state.json 中的持久化 Cookie 已全部过期，请重新登录导出。"
+    return ""
 
 
 def _artifact_stem(config, node) -> str:
@@ -341,8 +378,16 @@ def pytest_configure(config):
     interval = max(
         config.getoption("--pw-request-interval"),
         config.getoption("--pw-link-request-interval"),
+        config.getoption("--pw-cart-request-interval"),
     )
-    config._jujubit_site_pacer = SiteRequestPacer(interval)
+    # 首页、Creator 导航和购物车 API 命中同一站点/WAF，必须共享一个时钟；
+    # 分开计时仍可能出现 clear.js 后立刻打开首页的突发请求。
+    shared_pacer = SiteRequestPacer(interval)
+    config._jujubit_site_pacer = shared_pacer
+    config._jujubit_cart_pacer = shared_pacer
+    # 429 熔断：首次持续受限后，不再让剩余购物车用例继续撞同一出口 IP。
+    config._jujubit_cart_rate_limited = ""
+    config._jujubit_site_rate_limited = ""
     config._jujubit_link_probe_cache = {}
 
 
