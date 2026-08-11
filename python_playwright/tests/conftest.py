@@ -56,6 +56,9 @@ CASE_TITLES = {
     "test_homepage_json_ld_is_valid_and_matches_faq": "REQ-13: JSON-LD 可解析且 FAQ 与页面同源",
     "test_homepage_image_alt_policy": "REQ-14: 首页图片 alt 符合 SEO 与合规要求",
     "test_core_content_is_present_in_server_html": "REQ-15: 原始 HTML 包含核心 SEO、导航与区块内容",
+    "test_ci_smoke_generate_add_and_checkout": (
+        "CART-SMOKE: 单一登录上下文完成生成、加购、全屏购物车与 Checkout"
+    ),
     **{
         function_name: case.report_title
         for function_name, case in CART_CASES_BY_FUNCTION.items()

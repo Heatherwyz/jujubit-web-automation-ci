@@ -71,11 +71,17 @@ class CartPage:
         self.config = config
         self.home = HomePage(page, self.base_url, config)
         self._rate_limited_urls: list[str] = []
+        self._cart_mutated = False
         page.on("response", self._record_rate_limit)
 
     @property
     def drawer(self):
         return self.page.locator(".ccd.is-open")
+
+    @property
+    def cart_was_mutated(self) -> bool:
+        """当前 case 是否成功写入过服务端购物车。"""
+        return self._cart_mutated
 
     @property
     def full_cart(self):
@@ -201,6 +207,7 @@ class CartPage:
             )
             if not response.ok:
                 raise AssertionError(f"清空购物车失败：HTTP {response.status}")
+            self._cart_mutated = False
         except (AssertionError, PlaywrightError, SiteRateLimitError):
             if not ignore_errors:
                 raise
@@ -215,6 +222,13 @@ class CartPage:
         )
         assert response.ok, f"读取购物车失败：HTTP {response.status}"
         return response.json()
+
+    def ensure_empty_cart(self) -> None:
+        """先读取购物车，仅在确有商品时发送幂等清车请求。"""
+        snapshot = self.cart_json()
+        item_count = int(snapshot.get("item_count") or 0)
+        if item_count > 0:
+            self.clear_cart()
 
     def open_home(self) -> None:
         """从首页开始主流程，并关闭可能遮挡入口的优惠弹窗。"""
@@ -355,14 +369,16 @@ class CartPage:
         )
 
         # 两类资源均已完成后再主动切换，分别验证用户实际可以看到 2D 和 3D。
-        self._visible_button("2D").click()
+        # 2D/3D 是当前页面内的视图切换，不应等待页面导航。GitHub Runner 曾在
+        # 点击已成功且 3D 已渲染后，因误等 scheduled navigation 报 10 秒超时。
+        self._visible_button("2D").click(no_wait_after=True)
         expect(self.page.locator('[data-view-name="2d"]:visible')).to_be_visible(
             timeout=10_000
         )
         image_url = self._generated_image_url(visible_only=True)
         assert image_url, "切换到 2D 后未展示已加载的生成结果图片"
 
-        self._visible_button("3D").click()
+        self._visible_button("3D").click(no_wait_after=True)
         expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible(
             timeout=10_000
         )
@@ -388,7 +404,7 @@ class CartPage:
                 "已有 Gallery 资产的 2D 图片加载完成",
             )
             # 历史记录可能默认停在 2D；3D 就绪判断只检查当前可见的 renderer。
-            self._visible_button("3D").click()
+            self._visible_button("3D").click(no_wait_after=True)
             expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible()
             self._poll_until(
                 self._generated_model_loaded,
@@ -400,12 +416,12 @@ class CartPage:
                 f"账号最新 Gallery 记录不可用于购物车回归：{error}"
             ) from error
 
-        self._visible_button("2D").click()
+        self._visible_button("2D").click(no_wait_after=True)
         expect(self.page.locator('[data-view-name="2d"]:visible')).to_be_visible()
         image_url = self._generated_image_url(visible_only=True)
         if not image_url:
             raise CartTestDataUnavailable("已有 Gallery 记录未提供可见 2D 图片。")
-        self._visible_button("3D").click()
+        self._visible_button("3D").click(no_wait_after=True)
         expect(self.page.locator('[data-view-name="3d"]:visible')).to_be_visible()
         expect(
             self.page.locator('[data-view-name="3d"]:visible canvas:visible').first
@@ -490,9 +506,18 @@ class CartPage:
                     && !button.classList.contains('opacity-50'))""",
             timeout=30_000,
         )
-        gallery.click()
+        gallery.click(no_wait_after=True)
         expect(self._visible_button("2D")).to_be_visible()
         expect(self._visible_button("3D")).to_be_visible()
+
+    def open_create(self) -> None:
+        """切回 Create 面板，供无可复用 Gallery 资产时现场生成。"""
+        create = self.page.locator("#jjb-create-canvas").get_by_role(
+            "button", name="Create", exact=True
+        )
+        expect(create).to_be_visible()
+        create.click(no_wait_after=True)
+        expect(self.page.locator("main input[type=file]").first).to_be_attached()
 
     def add_current_model_to_cart(self) -> None:
         """当前 Gallery 模型只加购一次，并等待半屏购物车打开。"""
@@ -514,6 +539,7 @@ class CartPage:
             self._mark_rate_limited(reason)
             raise SiteRateLimitError(reason)
         assert response.ok, f"Gallery 加购接口失败：HTTP {response.status}"
+        self._cart_mutated = True
         expect(self.drawer).to_be_visible(timeout=30_000)
         assert urlparse(self.page.url).path != "/cart", "Add to Cart 不应直接进入全屏购物车"
 
@@ -738,7 +764,7 @@ class CartPage:
             "刚生成的 Gallery History 重新加载",
         )
         self.open_gallery()
-        self._visible_button("2D").click()
+        self._visible_button("2D").click(no_wait_after=True)
         expect(self.page.locator('[data-view-name="2d"]:visible')).to_be_visible(
             timeout=10_000
         )

@@ -35,12 +35,12 @@ def _parse_args():
     parser.add_argument(
         "--cart-smoke",
         action="store_true",
-        help="执行首页及 4 条代表性购物车用例；适合按需综合 Smoke，完整购物车回归请用 --include-cart。",
+        help="执行首页及 1 条单上下文购物车主链路；完整购物车回归请用 --include-cart。",
     )
     parser.add_argument(
         "--cart-smoke-only",
         action="store_true",
-        help="只执行 4 条代表性购物车用例；供低频购物车 CI 使用，不执行首页。",
+        help="只执行 1 条单上下文购物车主链路；供低频购物车 CI 使用，不执行首页。",
     )
     parser.add_argument(
         "--cart-only",
@@ -115,13 +115,16 @@ def main() -> int:
         # 人机验证必须由使用者在可见浏览器中完成，脚本只负责等待并继续执行。
         command.extend(["--headed", "--pw-manual-verification"])
     if args.cart_smoke:
-        # 综合 Smoke 只跑 4 条代表性购物车 case，避免 30 条独立登录上下文连续撞 WAF。
+        # 综合 Smoke 只跑 1 条单上下文主链路，避免多个登录上下文连续撞 WAF。
         command.extend(["-m", "not cart_session or cart_smoke"])
     elif args.cart_smoke_only:
         # 独立购物车工作流不重复跑首页，只验证低频代表性购物车路径。
         command.extend(["-m", "cart_session and cart_smoke"])
     elif args.cart_only:
-        command.extend(["-m", "cart_session"])
+        command.extend(["-m", "cart_session and not cart_smoke"])
+    elif args.include_cart:
+        # 完整回归保留原有 15 条逻辑用例；独立 CI Smoke 不重复计入 30 条记录。
+        command.extend(["-m", "not cart_smoke"])
     elif not args.include_cart:
         # 购物车主流程会真实创建生成任务；默认回归不产生这类外部副作用。
         command.extend(["-m", "not cart_session"])

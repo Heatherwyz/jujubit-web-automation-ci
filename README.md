@@ -24,14 +24,14 @@ python3 -m venv .venv
 .venv/bin/python run_all.py --include-cart
 ```
 
-如只想执行代表性的 4 条购物车逻辑用例（默认 PC/H5 共 8 条记录，且不重复执行首页），运行：
+如只想执行单一登录上下文的购物车主链路（默认 PC/H5 各 1 条，且不重复执行首页），运行：
 
 ```bash
 .venv/bin/python run_all.py --cart-smoke-only
 ```
 
-GitHub 的低频 Smoke 会附加 `--platform pc`，只执行 4 条 PC 记录，避免同一登录态
-立即再复制一轮 H5 请求；完整回归仍同时覆盖 PC/H5。
+该 Smoke 会在同一个 context 内完成“生成 2D/3D → 加购 → 半屏/全屏购物车 → Checkout”。
+GitHub 会附加 `--platform pc`，只执行 1 条 PC 主链路；完整回归仍同时覆盖 PC/H5 30 条记录。
 
 如只想执行全部 30 条购物车 PC/H5 记录，运行：
 
@@ -81,7 +81,7 @@ artifacts/runs/<时间戳>/jujubit-report-<时间戳>.html
 | 工作流 | 自动执行 | 手动入口 | 用途 |
 | --- | --- | --- | --- |
 | `JuJuBit 首页 UI Tests` | 每天北京时间 09:00 | **Actions → JuJuBit 首页 UI Tests → Run workflow** | 只执行首页 PC/H5 用例，不读取购物车登录态。 |
-| `JuJuBit 购物车 UI Tests` | 每周一北京时间 10:00（PC Smoke） | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | 手动选择 `smoke`（4 条 PC 代表用例）或 `full`（15 条逻辑用例 / PC-H5 共 30 条记录）。 |
+| `JuJuBit 购物车 UI Tests` | 每周一北京时间 10:00（PC Smoke） | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | 手动选择 `smoke`（1 条 PC 单上下文主链路）或 `full`（15 条逻辑用例 / PC-H5 共 30 条记录）。 |
 
 两个工作流会共享同一个并发队列，不会同时从 GitHub Runner 访问站点。日常任务不再运行
 完整购物车回归；只有在 Actions 页面明确选择 `full` 时才会执行全部购物车用例。

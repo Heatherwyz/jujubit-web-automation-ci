@@ -78,7 +78,7 @@ jobs:
         id: suite
         shell: bash
         run: |
-          # 定时任务只跑 Smoke；完整 30 条购物车记录必须由使用者在 Actions 页面手动选择 full。
+          # 定时任务只跑单上下文 Smoke；完整 30 条记录必须手动选择 full。
           set +e
           if [[ "${{ github.event_name }}" == "schedule" ]]; then
             suite="smoke"
@@ -87,7 +87,7 @@ jobs:
           fi
           case "$suite" in
             smoke)
-              # GitHub 托管 Runner 只跑 PC 代表用例，避免同一登录态再复制一轮 H5 请求。
+              # 一次登录上下文串起生成、加购、全屏购物车和 Checkout，减少 WAF 请求峰值。
               python run_all.py --cart-smoke-only --platform pc --cart-request-interval 6
               ;;
             full)

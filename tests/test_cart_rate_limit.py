@@ -110,6 +110,30 @@ class CartRateLimitTests(unittest.TestCase):
             ["post", "post"],
         )
 
+    def test_empty_cart_check_does_not_send_unnecessary_clear(self) -> None:
+        """新 context 本来就是空车时，只读一次 cart.js。"""
+        cart = self._cart([_Response(200, payload={"item_count": 0})])
+
+        cart.ensure_empty_cart()
+
+        self.assertEqual(
+            [method for method, _url, _kwargs in cart.page.request.calls],
+            ["get"],
+        )
+
+    def test_nonempty_cart_is_cleared_after_reading_current_state(self) -> None:
+        """只有服务端确认存在商品时才调用 cart/clear.js。"""
+        cart = self._cart(
+            [_Response(200, payload={"item_count": 2}), _Response(200)]
+        )
+
+        cart.ensure_empty_cart()
+
+        self.assertEqual(
+            [method for method, _url, _kwargs in cart.page.request.calls],
+            ["get", "post"],
+        )
+
     def test_exhausted_429_opens_circuit_and_blocks_later_requests(self) -> None:
         cart = self._cart([_Response(429), _Response(429), _Response(200)])
 
