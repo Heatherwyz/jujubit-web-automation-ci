@@ -81,10 +81,11 @@ artifacts/runs/<时间戳>/jujubit-report-<时间戳>.html
 | 工作流 | 自动执行 | 手动入口 | 用途 |
 | --- | --- | --- | --- |
 | `JuJuBit 首页 UI Tests` | 每天北京时间 09:00 | **Actions → JuJuBit 首页 UI Tests → Run workflow** | 只执行首页 PC/H5 用例，不读取购物车登录态。 |
-| `JuJuBit 购物车 UI Tests` | 每周一北京时间 10:00（PC Smoke） | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | 手动选择 `smoke`（1 条 PC 单上下文主链路）或 `full`（15 条逻辑用例 / PC-H5 共 30 条记录）。 |
+| `JuJuBit 购物车 UI Tests` | 每天北京时间 10:00（完整回归） | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | 定时执行 `full`（15 条逻辑用例 / PC-H5 共 30 条记录）；手动可选择 `smoke`（1 条 PC 单上下文主链路）或 `full`。 |
 
-两个工作流会共享同一个并发队列，不会同时从 GitHub Runner 访问站点。日常任务不再运行
-完整购物车回归；只有在 Actions 页面明确选择 `full` 时才会执行全部购物车用例。
+两个工作流会共享同一个并发队列，不会同时从 GitHub Runner 访问站点。首页每天北京时间 09:00
+开始，购物车完整回归每天北京时间 10:00 开始；如果首页尚未结束，购物车会自动排队，随后再运行。
+两条工作流会分别发送“首页”和“购物车”的飞书结果卡片与独立 Artifact，这是为了让失败录像和模块统计更清晰。
 
 ### 第一次推送到 GitHub
 
@@ -147,8 +148,8 @@ gh secret set PLAYWRIGHT_STORAGE_STATE_JSON < artifacts/auth/storage-state.json
 ### 海外访问与 HTTP 429
 
 GitHub 托管 Runner 的出口地区和 IP 不保证固定，Shopify/WAF 可能返回 429 或人机验证。
-为降低购物车登录流量，项目会把每日首页任务、每周购物车 Smoke 和手动完整购物车回归分开，
-串行排队执行；GitHub Smoke 只跑 PC，购物车 API 还会以 6 秒最小间隔访问，首次持续 429 后剩余购物车记录会直接标记
+为降低购物车登录流量，项目会把每日首页任务与每日完整购物车回归分开、串行排队执行；
+手动 Smoke 只跑 PC，完整购物车 API 还会以 6 秒最小间隔访问，首次持续 429 后剩余购物车记录会直接标记
 为“429 未完成”，不会继续反复登录和撞站点。429 不计为页面功能失败，但表示该轮无法完成验收。
 
 工作流不会自动绕过 CAPTCHA；无人值守的 GitHub Job 也无法等待人工点击确认。若购物车工作流
