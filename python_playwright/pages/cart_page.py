@@ -241,12 +241,28 @@ class CartPage:
         create_link = self.page.locator(".jjb-header__create:visible").first
         expect(create_link).to_be_visible()
         expect(create_link).to_have_attribute("href", self.CREATOR_PATH)
+        # 弹窗可能在 open_home() 的首次检查后异步出现；点击 Header 入口前必须再验证。
+        self.home.close_popup_before_click()
         self._pace_cart_request()
         create_link.click()
-        self.page.wait_for_url(re.compile(r"/products/customize-your-own(?:[?#]|$)"))
+        # Creator 首屏会持续加载商品资源；URL 已切换即可证明 Header 导航成功，
+        # 不能让 Playwright 再等待完整 load 而把已到达创作页误判成超时。
+        try:
+            self.page.wait_for_function(
+                "expectedPath => window.location.pathname === expectedPath",
+                arg=self.CREATOR_PATH,
+                timeout=30_000,
+            )
+        except PlaywrightTimeoutError as error:
+            self._raise_if_rate_limited()
+            raise AssertionError(
+                f"Header Create 点击后未进入创作页：{self.page.url}"
+            ) from error
         self._raise_if_rate_limited()
-        self._wait_for_creator_ready()
+        # 同一优惠弹窗可能在创作页重新出现；先关闭再等待自定义组件加载，
+        # 避免录像中弹窗始终遮挡真实页面，也避免其脚本影响组件初始化。
         self.home.close_welcome_popup()
+        self._wait_for_creator_ready()
 
     def assert_creator_controls(self) -> None:
         """确认创作页真实可操作，而不只验证 URL 已改变。"""
@@ -337,7 +353,7 @@ class CartPage:
 
     def generate_once(self) -> None:
         """只点击一次 Generate；不重试，避免重复创建计费任务。"""
-        self.home.close_welcome_popup()
+        self.home.close_popup_before_click()
         generate = self.page.locator("button.jjb-tool--generate")
         expect(generate).to_be_visible()
         expect(generate).to_be_enabled()
@@ -526,7 +542,7 @@ class CartPage:
 
     def add_current_model_to_cart(self) -> None:
         """当前 Gallery 模型只加购一次，并等待半屏购物车打开。"""
-        self.home.close_welcome_popup()
+        self.home.close_popup_before_click()
         add_button = self.page.locator("button:visible").filter(
             has_text=re.compile(r"^Add to Cart$")
         ).first
@@ -546,8 +562,91 @@ class CartPage:
             raise SiteRateLimitError(reason)
         assert response.ok, f"Gallery 加购接口失败：HTTP {response.status}"
         self._cart_mutated = True
-        expect(self.drawer).to_be_visible(timeout=30_000)
+        try:
+            # 只等待页面产品代码自然创建并打开抽屉。不能调用 host.open()、点击 Header
+            # 或伪造事件，否则会把「加购成功但未自动打开抽屉」这个真实缺陷掩盖掉。
+            expect(self.drawer).to_be_visible(timeout=30_000)
+        except AssertionError as error:
+            self._record_drawer_open_failure_evidence(add_button)
+            cart = self.cart_json()
+            drawer_state = self.page.evaluate(
+                """() => {
+                    const host = document.querySelector('custom-cart-drawer');
+                    const drawer = host?.querySelector('.ccd');
+                    const button = [...document.querySelectorAll('button')]
+                        .find(element => element.textContent.trim() === 'Add to Cart');
+                    return {
+                        hostPresent: Boolean(host),
+                        customElementRegistered: Boolean(
+                            customElements.get('custom-cart-drawer')
+                        ),
+                        hostOpenState: host?.isOpen ?? null,
+                        drawerOpen: Boolean(drawer?.classList.contains('is-open')),
+                        drawerClass: drawer?.className || '',
+                        addButtonBusy: button?.getAttribute('aria-busy') || '',
+                        addButtonDisabled: Boolean(button?.disabled),
+                    };
+                }"""
+            )
+            raise AssertionError(
+                "Gallery 加购接口已成功，但产品未在 30 秒内自动打开半屏购物车："
+                f"cart.js item_count={cart.get('item_count', 0)}，"
+                f"custom-cart-drawer 已注册={drawer_state['customElementRegistered']}，"
+                f"host 已挂载={drawer_state['hostPresent']}，"
+                f"host.isOpen={drawer_state['hostOpenState']}，"
+                f"抽屉已打开={drawer_state['drawerOpen']}，"
+                f"抽屉 class={drawer_state['drawerClass']!r}，"
+                f"Add to Cart aria-busy={drawer_state['addButtonBusy']!r}，"
+                f"disabled={drawer_state['addButtonDisabled']}。"
+                "请检查 Creator 加购后 openCartDrawer 的异步链路；"
+                "测试不会通过脚本强制打开抽屉来掩盖该问题。"
+            ) from error
         assert urlparse(self.page.url).path != "/cart", "Add to Cart 不应直接进入全屏购物车"
+
+    def _record_drawer_open_failure_evidence(self, add_button) -> None:
+        """给「加购成功但抽屉未开」标出仍在加载的真实按钮，供报告截图定位。"""
+        try:
+            add_button.scroll_into_view_if_needed()
+            self.page.evaluate(
+                """element => {
+                    const old = document.getElementById('jujubit-test-evidence-label');
+                    if (old) old.remove();
+                    element.style.setProperty('outline', '5px solid #ff2d2d', 'important');
+                    element.style.setProperty(
+                        'background-color', 'rgba(255, 45, 45, 0.16)', 'important'
+                    );
+                    const rect = element.getBoundingClientRect();
+                    const label = document.createElement('div');
+                    label.id = 'jujubit-test-evidence-label';
+                    label.textContent = '加购后抽屉未打开';
+                    Object.assign(label.style, {
+                        position: 'fixed', zIndex: '2147483646',
+                        left: `${Math.max(8, Math.min(rect.left, window.innerWidth - 150))}px`,
+                        top: `${Math.max(8, rect.top - 34)}px`, padding: '5px 9px',
+                        background: '#ff2d2d', color: '#fff', borderRadius: '4px',
+                        font: 'bold 13px/1.2 Arial, sans-serif', pointerEvents: 'none',
+                    });
+                    document.body.appendChild(label);
+                    window.__jujubitTestEvidence = {
+                        note: 'cart/add.js 成功且角标已更新，但 Add to Cart 仍在加载，半屏购物车未自动打开',
+                        selector: 'button:visible (Add to Cart)', tag: 'button',
+                        text: (element.innerText || 'Add to Cart').trim(),
+                        attributes: {
+                            disabled: String(Boolean(element.disabled)),
+                            ariaBusy: element.getAttribute('aria-busy'),
+                        },
+                        box: {
+                            x: Math.round(rect.left + window.scrollX),
+                            y: Math.round(rect.top + window.scrollY),
+                            width: Math.round(rect.width), height: Math.round(rect.height),
+                        },
+                    };
+                }""",
+                add_button,
+            )
+        except Exception:
+            # 证据辅助逻辑不能覆盖原有业务失败结论。
+            pass
 
     def assert_drawer_cart(self, quantity: int) -> None:
         """校验半屏购物车商品、金额、包邮与 Checkout 件数。"""
@@ -788,7 +887,7 @@ class CartPage:
         self, expected_quantity: Optional[int] = None
     ) -> None:
         """点击 Header Cart，并确认进入全屏 /cart。"""
-        self.home.close_welcome_popup()
+        self.home.close_popup_before_click()
         expect(self.header_cart).to_be_visible()
         if expected_quantity is not None:
             self.assert_header_badge(expected_quantity)
@@ -1063,7 +1162,7 @@ class CartPage:
 
     def _checkout(self, button, source: str) -> None:
         """从指定购物车入口进入 Checkout；有副作用的点击只执行一次。"""
-        self.home.close_welcome_popup()
+        self.home.close_popup_before_click()
         expect(button).to_be_visible()
         expect(button).to_be_enabled()
         self._pace_cart_request()

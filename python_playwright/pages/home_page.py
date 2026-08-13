@@ -32,6 +32,11 @@ class HomePage:
         self.announcement = page.get_by_role("region", name="Announcement bar")
         self.primary_nav = page.get_by_role("navigation", name="Primary")
         # 线上主题曾同时出现新旧两种优惠弹窗 class，统一覆盖，避免遮挡点击。
+        # ``:visible`` 不能单独作为判断：真正拦截点击的可能是全屏 overlay，
+        # 因此关闭逻辑还会结合 elementFromPoint 检查当前顶层命中元素。
+        self.popup_root = page.locator(
+            ".newsletter-popup-v2, .newsletter-popup--original"
+        )
         self.welcome_popup = page.locator(
             ".newsletter-popup-v2:visible, .newsletter-popup--original:visible"
         )
@@ -188,29 +193,126 @@ class HomePage:
                 "`run_all.py --manual-verification` 重新执行。"
             ) from error
 
-    def close_welcome_popup(self) -> bool:
-        """若优惠弹窗出现则关闭，返回本次是否实际关闭了弹窗。"""
+    def _popup_blocks_interaction(self) -> bool:
+        """判断优惠弹窗或其遮罩是否仍会拦截真实用户点击。"""
+        return bool(
+            self.page.evaluate(
+                """() => {
+                    const candidates = [...document.querySelectorAll([
+                        '.newsletter-popup-v2',
+                        '.newsletter-popup--original',
+                        '.newsletter-popup-v2__overlay',
+                        '.newsletter-popup__overlay',
+                        '.newsletter-popup-v2 button[aria-label*="Close"]',
+                        '.newsletter-popup--original button[aria-label*="Close"]',
+                        '.newsletter-popup-v2 .modal__close',
+                        '.newsletter-popup--original .modal__close',
+                    ].join(','))];
+
+                    const isRendered = element => {
+                        if (typeof element.checkVisibility === 'function'
+                            && !element.checkVisibility({
+                                checkOpacity: true,
+                                checkVisibilityCSS: true,
+                            })) return false;
+                        const style = window.getComputedStyle(element);
+                        const rect = element.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && Number(style.opacity || 1) > 0
+                            && rect.width > 1
+                            && rect.height > 1
+                            && rect.right > 0
+                            && rect.bottom > 0
+                            && rect.left < window.innerWidth
+                            && rect.top < window.innerHeight;
+                    };
+
+                    const receivesPointer = element => {
+                        if (!isRendered(element)) return false;
+                        const rect = element.getBoundingClientRect();
+                        const left = Math.max(0, rect.left);
+                        const right = Math.min(window.innerWidth, rect.right);
+                        const top = Math.max(0, rect.top);
+                        const bottom = Math.min(window.innerHeight, rect.bottom);
+                        const points = [
+                            [(left + right) / 2, (top + bottom) / 2],
+                            [left + 2, top + 2],
+                            [right - 2, top + 2],
+                            [left + 2, bottom - 2],
+                            [right - 2, bottom - 2],
+                        ];
+                        return points.some(([x, y]) => {
+                            const hit = document.elementFromPoint(x, y);
+                            return Boolean(hit && (hit === element || element.contains(hit)));
+                        });
+                    };
+
+                    return candidates.some(receivesPointer);
+                }"""
+            )
+        )
+
+    def _popup_close_controls(self):
+        """返回所有可见关闭控件；多个主题变体并存时逐个尝试顶层控件。"""
+        return self.popup_root.locator(
+            "button[aria-label='Close']:visible, "
+            "button[aria-label*='Close']:visible, "
+            ".modal__close:visible, "
+            "[data-popup-close]:visible"
+        )
+
+    def close_welcome_popup(self, *, observe_timeout: Optional[int] = None) -> bool:
+        """关闭出现或遮挡点击的优惠弹窗，返回本次是否实际关闭。"""
         # 同一地址第一次最多观察 7 秒，覆盖线上延迟弹窗；后续调用只做快速复查。
         current_url = self.page.url
-        wait_timeout = 7_000 if self._popup_checked_url != current_url else 500
-        try:
-            self.welcome_popup.wait_for(state="visible", timeout=wait_timeout)
-        except PlaywrightTimeoutError:
+        wait_timeout = (
+            observe_timeout
+            if observe_timeout is not None
+            else (7_000 if self._popup_checked_url != current_url else 500)
+        )
+        deadline = time.monotonic() + max(0, wait_timeout) / 1_000
+        while not self._popup_blocks_interaction() and time.monotonic() < deadline:
+            self.page.wait_for_timeout(100)
+        if not self._popup_blocks_interaction():
             self._popup_checked_url = current_url
             return False
-        close_button = self.welcome_popup.get_by_role("button", name="Close", exact=True)
-        # 页面脚本偶发晚于弹窗渲染完成，首次点击未生效时只重试一次，避免后续操作被遮挡。
+        # 页面脚本偶发晚于遮罩渲染完成。多个弹窗主题节点可能同时存在，逐个点击
+        # 当前可见的真实关闭控件；绝不通过改样式或删除 DOM 绕过弹窗。
+        last_error = None
         for attempt in range(2):
-            close_button.click()
+            controls = self._popup_close_controls()
             try:
-                self.welcome_popup.wait_for(state="hidden", timeout=3_000)
-                self._popup_checked_url = current_url
-                return True
-            except PlaywrightTimeoutError:
-                if attempt == 1:
-                    raise AssertionError("优惠弹窗连续点击两次后仍未关闭")
+                # 遮罩可能先出现、关闭按钮再由主题脚本挂载；先等真实控件可见。
+                controls.first.wait_for(state="visible", timeout=3_000)
+            except PlaywrightTimeoutError as error:
+                last_error = error
+                if attempt == 0:
+                    self.page.wait_for_timeout(500)
+                    continue
+                break
+            for close_button in controls.all():
+                try:
+                    close_button.click(timeout=3_000)
+                except PlaywrightError as error:
+                    # 被另一层弹窗覆盖的关闭按钮无法点击，继续尝试真正位于顶层的控件。
+                    last_error = error
+                    continue
+                self.page.wait_for_timeout(250)
+                if not self._popup_blocks_interaction():
+                    self._popup_checked_url = current_url
+                    return True
+            if attempt == 0:
                 self.page.wait_for_timeout(500)
-        return False
+        if not self._popup_close_controls().count():
+            raise AssertionError("优惠弹窗遮罩出现，但未找到可操作的关闭按钮") from last_error
+        raise AssertionError("优惠弹窗关闭后仍在遮挡页面操作") from last_error
+
+    def close_popup_before_click(self) -> bool:
+        """点击关键入口前再次观察延迟弹窗，避免遮罩在首次检查后才出现。"""
+        # 当前线上主题的 data-delay-seconds 为 3；额外留出 1 秒调度余量，避免
+        # 正好在动画/脚本挂载边界漏掉弹窗，导致下一次点击被遮罩拦截。
+        return self.close_welcome_popup(observe_timeout=4_000)
 
     def visible_logo(self):
         """返回当前视口中指向首页的品牌 Logo。"""

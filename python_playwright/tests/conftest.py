@@ -8,7 +8,6 @@ from datetime import datetime
 import json
 from pathlib import Path
 import re
-import shutil
 import socket
 import time
 from html import escape
@@ -119,15 +118,71 @@ def browser(playwright_runtime, request):
     instance.close()
 
 
-@pytest.fixture
-def page(browser, request, test_platform):
-    """为每条 case 创建干净浏览器上下文，并在失败时保存可复盘的证据。"""
-    artifact_dir = _artifact_dir(request.config)
-    options = {"viewport": VIEWPORTS[test_platform]}
+class _CartContextPool:
+    """按平台懒创建并复用购物车 Context，避免首页无意义地加载登录态。"""
+
+    def __init__(self, browser, config, storage_state: Path):
+        self.browser = browser
+        self.config = config
+        self.storage_state = storage_state
+        self.contexts = {}
+        self.video_dir = _artifact_dir(config) / "failure-videos" / "raw"
+
+    def get(self, platform: str):
+        """返回平台专属 Context；首次访问该平台时才导入登录态。"""
+        if platform not in VIEWPORTS:
+            raise ValueError(f"不支持的购物车测试平台：{platform}")
+        context = self.contexts.get(platform)
+        if context is not None:
+            return context
+        options = {
+            "viewport": VIEWPORTS[platform],
+            "storage_state": str(self.storage_state),
+        }
+        if platform == "h5":
+            options.update(
+                {"device_scale_factor": 3, "is_mobile": True, "has_touch": True}
+            )
+        if self.config.getoption("--pw-record-video"):
+            self.video_dir.mkdir(parents=True, exist_ok=True)
+            options["record_video_dir"] = str(self.video_dir)
+        context = self.browser.new_context(**options)
+        self.contexts[platform] = context
+        return context
+
+    def close(self) -> None:
+        """关闭已经创建的 Context；未使用的平台不会产生额外浏览器状态。"""
+        for context in self.contexts.values():
+            try:
+                context.close()
+            except Exception:
+                # 某个 Context 已异常关闭时，仍继续清理其它平台。
+                pass
+
+
+@pytest.fixture(scope="session")
+def cart_contexts(browser, request):
+    """为 PC/H5 各维护一个购物车登录上下文，跨 case 保留 Gallery 数据。"""
     storage_state = Path(request.config.getoption("--pw-storage-state")).expanduser()
     if not storage_state.is_absolute():
         storage_state = ROOT / storage_state
-    if request.node.get_closest_marker("cart_session"):
+    pool = _CartContextPool(browser, request.config, storage_state)
+    try:
+        yield pool
+    finally:
+        # 关闭 Context 才会完成其中尚未关闭的 Playwright 录像文件。
+        pool.close()
+
+
+@pytest.fixture
+def page(browser, cart_contexts, request, test_platform):
+    """为每条 case 创建独立 Page；购物车 case 复用对应平台 Context。"""
+    artifact_dir = _artifact_dir(request.config)
+    is_cart_session = bool(request.node.get_closest_marker("cart_session"))
+    storage_state = Path(request.config.getoption("--pw-storage-state")).expanduser()
+    if not storage_state.is_absolute():
+        storage_state = ROOT / storage_state
+    if is_cart_session:
         # 购物车用例没有登录态时不要先打开首页再逐条失败，否则会把无效配置
         # 放大成几十次站点请求，并更容易触发 GitHub Runner 的 429。
         storage_issue = _storage_state_issue(storage_state)
@@ -139,17 +194,20 @@ def page(browser, request, test_platform):
         )
         if rate_limit_reason:
             pytest.skip(rate_limit_reason)
-        # 仅购物车主流程按需复用登录态，避免首页的 Log in 断言受影响。
-        options["storage_state"] = str(storage_state)
-    if test_platform == "h5":
-        options.update({"device_scale_factor": 3, "is_mobile": True, "has_touch": True})
-    if request.config.getoption("--pw-record-video"):
-        # Playwright 先写入随机名原始录像，失败后再复制为带时间戳的可读文件名。
-        video_dir = artifact_dir / "failure-videos" / "raw"
-        video_dir.mkdir(parents=True, exist_ok=True)
-        options["record_video_dir"] = str(video_dir)
-    context = browser.new_context(**options)
+    if is_cart_session:
+        # 同一端的所有购物车 case 共享一个登录 Context，保留 Gallery 的
+        # IndexedDB、localStorage 和 Cookie；每条 case 仍使用独立 Page。
+        context = cart_contexts.get(test_platform)
+    else:
+        options = {"viewport": VIEWPORTS[test_platform]}
+        if test_platform == "h5":
+            options.update(
+                {"device_scale_factor": 3, "is_mobile": True, "has_touch": True}
+            )
+        context = browser.new_context(**options)
     current_page = context.new_page()
+    if is_cart_session:
+        _restore_cart_session_storage(current_page, request.config, test_platform)
     current_page.set_default_timeout(10_000)
     current_page.set_default_navigation_timeout(30_000)
     yield current_page
@@ -187,23 +245,33 @@ def page(browser, request, test_platform):
                 request.node.nodeid,
                 screenshot_error=str(error).replace("\n", " ")[:300],
             )
-    context.close()
-    if failed and video:
+    if is_cart_session:
+        _capture_cart_session_storage(current_page, request.config, test_platform)
+    # 共享购物车 Context 要继续服务后续 case；普通首页 Context 则在本条结束时关闭。
+    current_page.close()
+    if not is_cart_session:
+        context.close()
+    if video:
         destination_dir = artifact_dir / "failure-videos"
         destination_dir.mkdir(parents=True, exist_ok=True)
         safe_name = _artifact_stem(request.config, request.node)
-        destination = destination_dir / f"{safe_name}.webm"
+        destination = destination_dir / f"{safe_name}.webm" if failed else None
         try:
-            source = Path(video.path())
-            if source.is_file():
-                shutil.copy2(source, destination)
-                # 只有复制后确认文件真实存在，报告才写入视频链接，避免产生 404。
+            if failed:
+                # save_as 会等待当前 Page 的录像完成；不依赖 Context 已关闭，
+                # 因而共享购物车 Context 也能在每条失败 case 后立即生成可点击视频。
+                video.save_as(destination)
+                # 只有保存后确认文件真实存在，报告才写入视频链接，避免产生 404。
                 if destination.is_file() and destination.stat().st_size > 0:
                     _update_result(
                         request.config,
                         request.node.nodeid,
                         video=f"failure-videos/{safe_name}.webm",
                     )
+            else:
+                # 共享 Context 不会在每条 case 后自动删除成功录像，主动清理避免
+                # 完整回归把 30 条无用原始录像留到 Artifact。
+                video.delete()
         except Exception:
             pass
 
@@ -237,6 +305,48 @@ def _storage_state_issue(path: Path) -> str:
     if persistent and all(float(cookie.get("expires") or 0) <= now for cookie in persistent):
         return "购物车未完成：storage-state.json 中的持久化 Cookie 已全部过期，请重新登录导出。"
     return ""
+
+
+def _restore_cart_session_storage(page, config, platform: str) -> None:
+    """在新 Page 的站点脚本执行前恢复同端上一条 case 的 sessionStorage。"""
+    platforms = getattr(config, "_jujubit_cart_session_storage", {})
+    state_by_origin = platforms.get(platform, {})
+    if not state_by_origin:
+        return
+    serialized = json.dumps(state_by_origin, ensure_ascii=True)
+    page.add_init_script(
+        script=f"""(() => {{
+            try {{
+                const stateByOrigin = {serialized};
+                const state = stateByOrigin[window.location.origin];
+                if (!state) return;
+                for (const [key, value] of Object.entries(state)) {{
+                    window.sessionStorage.setItem(key, value);
+                }}
+            }} catch (error) {{
+                // about:blank 暂时不能访问存储；真正导航后本脚本会再次执行。
+            }}
+        }})();"""
+    )
+
+
+def _capture_cart_session_storage(page, config, platform: str) -> None:
+    """关闭 Page 前把当前来源的 sessionStorage 暂存到 pytest 进程内存。"""
+    try:
+        snapshot = page.evaluate(
+            """() => ({
+                origin: window.location.origin,
+                entries: Object.fromEntries(Object.entries(window.sessionStorage)),
+            })"""
+        )
+    except Exception:
+        # 页面已崩溃或提前关闭时保留上一条成功取得的状态，不影响录像收尾。
+        return
+    origin = snapshot.get("origin", "") if isinstance(snapshot, dict) else ""
+    entries = snapshot.get("entries", {}) if isinstance(snapshot, dict) else {}
+    if not origin.startswith(("http://", "https://")) or not isinstance(entries, dict):
+        return
+    config._jujubit_cart_session_storage.setdefault(platform, {})[origin] = entries
 
 
 def _artifact_stem(config, node) -> str:
@@ -392,6 +502,8 @@ def pytest_configure(config):
     config._jujubit_cart_rate_limited = ""
     config._jujubit_site_rate_limited = ""
     config._jujubit_link_probe_cache = {}
+    # 只在当前 pytest 进程内按平台/来源传递，不写入报告或 Artifact。
+    config._jujubit_cart_session_storage = {}
 
 
 def pytest_html_report_title(report):
@@ -648,6 +760,10 @@ def _report_detail(report) -> str:
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """在终端打印本次运行的中文汇总和报告路径。"""
     results = list(config._jujubit_results.values())
+    # 共享 Context 的离线生命周期单测不带平台参数，也不会经过 page fixture；
+    # 它们由 pytest 正常计数，但不应被伪装成一次真实线上 UI 回归结果。
+    if not results:
+        return
     passed = sum(item["outcome"] == "passed" for item in results)
     failed = sum(item["outcome"] in {"failed", "error", "xpassed"} for item in results)
     skipped = sum(item["outcome"] in {"skipped", "xfailed"} for item in results)
