@@ -38,6 +38,7 @@ class _Page:
 
     def __init__(self, responses):
         self.request = _RequestClient(responses)
+        self.url = "https://jujubit.ai/"
 
     def get_by_role(self, *args, **kwargs):
         return object()
@@ -135,6 +136,33 @@ class HomePageRateLimitTests(unittest.TestCase):
     def test_cart_and_home_share_the_same_rate_limit_exception(self) -> None:
         """购物车首页入口遇到 429 时，测试层必须能按同一类型跳过。"""
         self.assertIs(CartRateLimitError, SiteRateLimitError)
+
+    def test_popup_recheck_is_short_after_current_url_was_fully_observed(self) -> None:
+        """同一页面已完整检查弹窗后，关键点击不再重复等待四秒。"""
+        home, _ = self._home([])
+        home._popup_checked_url = home.page.url
+        observed = []
+        home.close_welcome_popup = lambda *, observe_timeout: observed.append(
+            observe_timeout
+        ) or False
+
+        home.close_popup_before_click()
+
+        self.assertEqual(observed, [500])
+
+    def test_popup_recheck_keeps_delay_window_for_a_new_url(self) -> None:
+        """跳转到新页面后仍保留四秒观察窗口，避免漏掉延迟弹窗。"""
+        home, _ = self._home([])
+        home._popup_checked_url = "https://jujubit.ai/"
+        home.page.url = "https://jujubit.ai/products/customize-your-own"
+        observed = []
+        home.close_welcome_popup = lambda *, observe_timeout: observed.append(
+            observe_timeout
+        ) or False
+
+        home.close_popup_before_click()
+
+        self.assertEqual(observed, [4_000])
 
 
 if __name__ == "__main__":

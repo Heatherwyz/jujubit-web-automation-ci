@@ -310,9 +310,12 @@ class HomePage:
 
     def close_popup_before_click(self) -> bool:
         """点击关键入口前再次观察延迟弹窗，避免遮罩在首次检查后才出现。"""
-        # 当前线上主题的 data-delay-seconds 为 3；额外留出 1 秒调度余量，避免
-        # 正好在动画/脚本挂载边界漏掉弹窗，导致下一次点击被遮罩拦截。
-        return self.close_welcome_popup(observe_timeout=4_000)
+        # 当前 document 第一次已完整观察 7 秒后，后续关键点击只快速复查当前
+        # 顶层遮罩；避免每个购物车动作都重复等待 4 秒。若尚未完整检查过该 URL，
+        # 仍保留 4 秒窗口覆盖主题配置的 3 秒延迟弹窗。
+        current_url = self.page.url
+        observe_timeout = 500 if self._popup_checked_url == current_url else 4_000
+        return self.close_welcome_popup(observe_timeout=observe_timeout)
 
     def visible_logo(self):
         """返回当前视口中指向首页的品牌 Logo。"""

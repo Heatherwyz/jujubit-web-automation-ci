@@ -1,6 +1,7 @@
 """购物车生成结果等待逻辑的离线回归测试。"""
 
 import unittest
+from unittest.mock import Mock
 
 from python_playwright.pages.cart_page import CartPage
 
@@ -125,6 +126,72 @@ class CartGeneratedResultTests(unittest.TestCase):
         loaded = self._cart(page)._generated_model_loaded()
 
         self.assertFalse(loaded)
+
+    def test_dom_click_requires_one_visible_enabled_uncovered_control(self) -> None:
+        """CI 点击仍要经过唯一性、禁用态和遮挡检查，并发送真实输入事件。"""
+        page = Mock()
+        page.evaluate.return_value = {
+            "ok": True,
+            "x": 120,
+            "y": 240,
+            "coarsePointer": True,
+        }
+        cart = self._cart(page)
+
+        cart._click_visible_control(
+            "#jjb-create-canvas button",
+            description="点击 Add to Cart",
+            exact_text="Add to Cart",
+        )
+
+        page.evaluate.assert_called_once()
+        script, params = page.evaluate.call_args.args
+        self.assertIn("elementFromPoint", script)
+        self.assertNotIn("element.click()", script)
+        self.assertNotIn("requestAnimationFrame", script)
+        self.assertNotIn("hit.contains(element)", script)
+        self.assertEqual(params["exactText"], "Add to Cart")
+        page.touchscreen.tap.assert_called_once_with(120, 240)
+        page.mouse.click.assert_not_called()
+
+    def test_desktop_control_uses_real_mouse_click(self) -> None:
+        page = Mock()
+        page.evaluate.return_value = {
+            "ok": True,
+            "x": 600,
+            "y": 80,
+            "coarsePointer": False,
+        }
+        cart = self._cart(page)
+
+        cart._click_visible_control(
+            ".jjb-header__cart",
+            description="点击 Header Cart",
+        )
+
+        page.mouse.click.assert_called_once_with(600, 80)
+        page.touchscreen.tap.assert_not_called()
+
+    def test_dom_click_surfaces_page_blocker_in_chinese(self) -> None:
+        page = Mock()
+        page.evaluate.return_value = {
+            "ok": False,
+            "reason": "控件中心被其他元素遮挡",
+            "blocker": "div.newsletter-popup-v2__overlay",
+        }
+        cart = self._cart(page)
+
+        with self.assertRaisesRegex(
+            AssertionError,
+            "控件中心被其他元素遮挡.*newsletter-popup-v2__overlay",
+        ):
+            cart._click_visible_control(
+                ".jjb-header__cart",
+                description="点击 Header Cart",
+            )
+
+        page.mouse.click.assert_not_called()
+        page.touchscreen.tap.assert_not_called()
 
 
 if __name__ == "__main__":

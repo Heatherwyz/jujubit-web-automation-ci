@@ -101,11 +101,11 @@ class CartPage:
 
     @property
     def drawer_item(self):
-        return self.drawer.locator(".ccd-item").first
+        return self.drawer.locator(".ccd-item:visible").first
 
     @property
     def full_cart_item(self):
-        return self.full_cart.locator(".cc-item").first
+        return self.full_cart.locator(".cc-item:visible").first
 
     def _record_rate_limit(self, response) -> None:
         if response.status != 429:
@@ -244,7 +244,11 @@ class CartPage:
         # 弹窗可能在 open_home() 的首次检查后异步出现；点击 Header 入口前必须再验证。
         self.home.close_popup_before_click()
         self._pace_cart_request()
-        create_link.click()
+        self._click_visible_control(
+            ".jjb-header__create",
+            description="点击 Header Create",
+            allow_navigation=True,
+        )
         # Creator 首屏会持续加载商品资源；URL 已切换即可证明 Header 导航成功，
         # 不能让 Playwright 再等待完整 load 而把已到达创作页误判成超时。
         try:
@@ -358,7 +362,10 @@ class CartPage:
         expect(generate).to_be_visible()
         expect(generate).to_be_enabled()
         self._pace_cart_request()
-        generate.click(no_wait_after=True)
+        self._click_visible_control(
+            "button.jjb-tool--generate",
+            description="点击 Generate",
+        )
 
     def wait_for_new_gallery_result(
         self, previous_total: int, timeout_seconds: int
@@ -510,13 +517,111 @@ class CartPage:
 
     def _select_result_view(self, name: str) -> None:
         """切换 2D/3D，并由后续可见性断言确认真实结果。"""
-        button = self._visible_button(name)
-        # GitHub Chromium 曾在页面已切换后仍卡在鼠标协议返回；DOM click 只触发
-        # 同一个前端 handler，随后仍严格验证目标面板及图片/canvas，而非强制改 DOM。
-        button.evaluate("element => element.click()")
+        self.home.close_popup_before_click()
+        self._visible_button(name)
+        self._click_visible_control(
+            "#jjb-create-canvas button",
+            description=f"切换到 {name} 结果",
+            exact_text=name,
+        )
+
+    def _click_visible_control(
+        self,
+        selector: str,
+        *,
+        description: str,
+        exact_text: str = "",
+        allow_navigation: bool = False,
+    ) -> None:
+        """确认控件未被遮挡后，用真实鼠标或触摸事件点击。"""
+        # GitHub Chromium 在 H5 滚动到底部后，偶尔会在元素已可见、可用、稳定时
+        # 卡在 Locator.click 的动作性等待。这里先用同步 DOM 读取取得唯一控件坐标，
+        # 再由 Playwright Mouse/Touchscreen 发送真实输入事件，不调用 element.click()。
+        params = {
+            "selector": selector,
+            "exactText": exact_text,
+            "description": description,
+        }
+        before_url = self.page.url
+        try:
+            target = self.page.evaluate(
+                """params => {
+                const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
+                const isRendered = element => {
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && Number(style.opacity || 1) > 0
+                        && rect.width > 1
+                        && rect.height > 1;
+                };
+                const matches = [...document.querySelectorAll(params.selector)]
+                    .filter(isRendered)
+                    .filter(element => !params.exactText
+                        || normalize(element.textContent) === params.exactText);
+                if (matches.length !== 1) {
+                    return {
+                        ok: false,
+                        reason: `匹配到 ${matches.length} 个可见控件`,
+                    };
+                }
+                const element = matches[0];
+                if (element.disabled || element.getAttribute('aria-disabled') === 'true') {
+                    return {ok: false, reason: '控件处于禁用状态'};
+                }
+                element.scrollIntoView({
+                    block: 'center', inline: 'center', behavior: 'instant'
+                });
+                const rect = element.getBoundingClientRect();
+                const x = Math.max(0, Math.min(innerWidth - 1, rect.left + rect.width / 2));
+                const y = Math.max(0, Math.min(innerHeight - 1, rect.top + rect.height / 2));
+                const hit = document.elementFromPoint(x, y);
+                if (!hit || (hit !== element && !element.contains(hit))) {
+                    return {
+                        ok: false,
+                        reason: '控件中心被其他元素遮挡',
+                        blocker: hit
+                            ? `${hit.tagName.toLowerCase()}.${hit.className || ''}`
+                            : '未命中页面元素',
+                    };
+                }
+                return {
+                    ok: true,
+                    x,
+                    y,
+                    coarsePointer: matchMedia('(pointer: coarse)').matches,
+                };
+            }""",
+                params,
+            )
+            if target.get("ok"):
+                if target.get("coarsePointer"):
+                    self.page.touchscreen.tap(target["x"], target["y"])
+                else:
+                    self.page.mouse.click(target["x"], target["y"])
+        except PlaywrightError as error:
+            if allow_navigation:
+                # 站内导航可能在 evaluate 返回前销毁旧执行上下文。用一个很短的
+                # 有界等待确认 URL 已离开原页面；未变化则保留原异常，不能误吞。
+                try:
+                    self.page.wait_for_function(
+                        "beforeUrl => window.location.href !== beforeUrl",
+                        arg=before_url,
+                        timeout=2_000,
+                    )
+                    return
+                except PlaywrightTimeoutError:
+                    pass
+            raise
+        assert target.get("ok"), (
+            f"{description}失败：{target.get('reason', '未知原因')}，"
+            f"遮挡元素={target.get('blocker', '无')}"
+        )
 
     def open_gallery(self) -> None:
         """切换到 Gallery，并确认当前生成结果区域可交互。"""
+        self.home.close_popup_before_click()
         gallery = self.page.locator("button:visible").filter(
             has_text=re.compile(r"^Gallery$")
         ).first
@@ -524,21 +629,35 @@ class CartPage:
         self.page.wait_for_function(
             """() => [...document.querySelectorAll('#jjb-create-canvas button')]
                 .some(button => button.textContent.trim() === 'Gallery'
-                    && !button.classList.contains('opacity-50'))""",
+                    && !button.classList.contains('opacity-50')
+                    && !button.disabled
+                    && button.getAttribute('aria-disabled') !== 'true')""",
             timeout=30_000,
         )
-        gallery.click(no_wait_after=True)
+        self._click_visible_control(
+            "#jjb-create-canvas button",
+            description="打开 Gallery",
+            exact_text="Gallery",
+        )
         expect(self._visible_button("2D")).to_be_visible()
         expect(self._visible_button("3D")).to_be_visible()
 
     def open_create(self) -> None:
         """切回 Create 面板，供无可复用 Gallery 资产时现场生成。"""
+        self.home.close_popup_before_click()
         create = self.page.locator("#jjb-create-canvas").get_by_role(
             "button", name="Create", exact=True
         )
         expect(create).to_be_visible()
-        create.click(no_wait_after=True)
+        self._click_visible_control(
+            "#jjb-create-canvas button",
+            description="打开 Create 面板",
+            exact_text="Create",
+        )
         expect(self.page.locator("main input[type=file]").first).to_be_attached()
+        expect(
+            self.page.get_by_role("button", name="Upload your picture", exact=True)
+        ).to_be_visible()
 
     def add_current_model_to_cart(self) -> None:
         """当前 Gallery 模型只加购一次，并等待半屏购物车打开。"""
@@ -553,8 +672,12 @@ class CartPage:
             timeout=30_000,
         ) as response_info:
             self._pace_cart_request()
-            # 加购是 AJAX 写入；后续以接口响应和抽屉可见性判断，不等待页面导航。
-            add_button.click(no_wait_after=True)
+            # 加购是 AJAX 写入；DOM 点击后仍严格等待 cart/add.js 和抽屉自然打开。
+            self._click_visible_control(
+                "#jjb-create-canvas button",
+                description="点击 Add to Cart",
+                exact_text="Add to Cart",
+            )
         response = response_info.value
         if response.status == 429:
             reason = "Gallery 加购时触发站点访问频控（HTTP 429）。"
@@ -653,7 +776,7 @@ class CartPage:
         expect(self.drawer).to_be_visible()
         expect(self.drawer.locator(".ccd-title")).to_have_text("Cart")
         expect(self.drawer.locator(".ccd-close")).to_be_visible()
-        expect(self.drawer.locator(".ccd-item")).to_have_count(1)
+        expect(self.drawer.locator(".ccd-item:visible")).to_have_count(1)
         self._assert_cart_image_loaded(self.drawer_item.locator(".ccd-item-img"))
         expect(self.drawer_item.locator(".ccd-item-title")).to_have_text(re.compile(r"\S"))
         expect(self.drawer_item.locator(".ccd-item-variant")).to_have_text(
@@ -694,6 +817,7 @@ class CartPage:
     ) -> int:
         """直接提交数量，并等待服务端 cart/change.js 与整套 UI 联动完成。"""
         assert quantity >= 0, "数量输入不能为负数"
+        self.home.close_popup_before_click()
         expected_quantity = (
             min(quantity, 100) if expected_quantity is None else expected_quantity
         )
@@ -710,6 +834,11 @@ class CartPage:
             self._mark_rate_limited(reason)
             raise SiteRateLimitError(reason)
         assert response.ok, f"修改购物车数量失败：HTTP {response.status}"
+        actual_quantity = int(response.json().get("item_count", 0))
+        assert actual_quantity == expected_quantity, (
+            "修改购物车数量后服务端返回数量不一致："
+            f"expected={expected_quantity}, actual={actual_quantity}"
+        )
         if expected_quantity == 0:
             self.assert_empty_drawer()
         else:
@@ -723,19 +852,28 @@ class CartPage:
     def click_drawer_quantity(self, action: str, expected_quantity: int) -> None:
         """点击加号/减号，并等待数量和汇总完成更新。"""
         assert action in {"increase", "decrease"}
+        self.home.close_popup_before_click()
         button = self.drawer.locator(f'.ccd-qty-btn[data-action="{action}"]')
         expect(button).to_be_enabled()
         with self.page.expect_response(
             lambda response: "/cart/change.js" in response.url, timeout=30_000
         ) as response_info:
             self._pace_cart_request()
-            button.click(no_wait_after=True)
+            self._click_visible_control(
+                f'.ccd.is-open .ccd-qty-btn[data-action="{action}"]',
+                description=f"点击购物车数量{action}按钮",
+            )
         response = response_info.value
         if response.status == 429:
             reason = "点击购物车数量按钮时触发站点访问频控（HTTP 429）。"
             self._mark_rate_limited(reason)
             raise SiteRateLimitError(reason)
         assert response.ok, f"点击购物车数量按钮失败：HTTP {response.status}"
+        actual_quantity = int(response.json().get("item_count", 0))
+        assert actual_quantity == expected_quantity, (
+            "点击数量按钮后服务端返回数量不一致："
+            f"expected={expected_quantity}, actual={actual_quantity}"
+        )
         if expected_quantity == 0:
             self.assert_empty_drawer()
             return
@@ -766,8 +904,12 @@ class CartPage:
 
     def close_drawer(self) -> None:
         """关闭半屏购物车，但保留服务端购物车数据。"""
+        self.home.close_popup_before_click()
         expect(self.drawer.locator(".ccd-close")).to_be_visible()
-        self.drawer.locator(".ccd-close").click(no_wait_after=True)
+        self._click_visible_control(
+            ".ccd.is-open .ccd-close",
+            description="关闭半屏购物车",
+        )
         expect(self.drawer).not_to_be_visible()
 
     def drawer_snapshot(self) -> CartSnapshot:
@@ -800,7 +942,11 @@ class CartPage:
     def assert_empty_drawer(self) -> None:
         """校验线上最终空态文案、包邮状态和不可结算状态。"""
         expect(self.drawer).to_be_visible()
-        expect(self.drawer.locator(".ccd-item")).to_have_count(0, timeout=30_000)
+        # 组件会保留一份 display:none 的旧商品节点用于过渡；空态应以可见商品、
+        # 服务端数量和空态区域为准，不能把隐藏模板误判为仍有商品。
+        expect(self.drawer.locator(".ccd-item:visible")).to_have_count(
+            0, timeout=30_000
+        )
         expect(self.drawer.locator(".ccd-empty.is-visible")).to_be_visible()
         expect(self.drawer.locator(".ccd-empty-img")).to_be_visible()
         expect(self.drawer.locator(".ccd-empty-label")).to_have_text(self.EMPTY_CART_COPY)
@@ -849,7 +995,11 @@ class CartPage:
             assert width == 100
 
     def checkout_from_drawer(self) -> None:
-        self._checkout(self.drawer.locator(".ccd-checkout"), "半屏购物车")
+        self._checkout(
+            self.drawer.locator(".ccd-checkout"),
+            "半屏购物车",
+            selector=".ccd.is-open .ccd-checkout",
+        )
 
     def return_to_gallery(self, gallery_url: str, result: GeneratedResult) -> None:
         """从 Checkout 返回刚才的 Gallery，并确认生成记录仍可见。"""
@@ -894,7 +1044,13 @@ class CartPage:
         elif self.header_badge.count() and self.header_badge.is_visible():
             expect(self.header_badge).to_have_text(re.compile(r"^(?:[1-9]\d?|99\+)$"))
         self._pace_cart_request()
-        self.header_cart.click()
+        # Header Cart 是按钮触发的站内导航；DOM 点击后再以 /cart URL 和全屏组件
+        # 作为结果断言，避免 click 自身等待 scheduled navigation 时在 CI 假超时。
+        self._click_visible_control(
+            ".jjb-header__cart",
+            description="点击 Header Cart",
+            allow_navigation=True,
+        )
         self.page.wait_for_url(self.CART_URL, timeout=30_000)
         self._raise_if_rate_limited()
         self.home.close_welcome_popup()
@@ -912,7 +1068,7 @@ class CartPage:
         expect(self.full_cart.locator(".cc-close")).to_have_attribute(
             "aria-label", "Close"
         )
-        expect(self.full_cart.locator(".cc-item")).to_have_count(1)
+        expect(self.full_cart.locator(".cc-item:visible")).to_have_count(1)
         self._assert_cart_image_loaded(self.full_cart_item.locator(".cc-item-img"))
         expect(self.full_cart_item.locator(".cc-item-title")).to_have_text(
             re.compile(r"\S")
@@ -1012,13 +1168,18 @@ class CartPage:
         expected_path = urlparse(target_url).path or "/"
 
         close_button = self.full_cart.locator(".cc-close")
+        self.home.close_popup_before_click()
         expect(close_button).to_be_visible()
         self._pace_cart_request()
-        close_button.click()
+        self._click_visible_control(
+            "custom-cart .cc .cc-close",
+            description="关闭全屏购物车",
+            allow_navigation=True,
+        )
         try:
             self.page.wait_for_function(
                 "expectedPath => window.location.pathname === expectedPath",
-                expected_path,
+                arg=expected_path,
                 timeout=30_000,
             )
         except PlaywrightTimeoutError as error:
@@ -1031,7 +1192,11 @@ class CartPage:
         self.home.close_welcome_popup()
 
     def checkout_from_full_cart(self) -> None:
-        self._checkout(self.full_cart.locator(".cc-checkout"), "全屏购物车")
+        self._checkout(
+            self.full_cart.locator(".cc-checkout"),
+            "全屏购物车",
+            selector="custom-cart .cc .cc-checkout",
+        )
 
     def assert_checkout_summary(self, expected: CartSnapshot) -> None:
         """确认 Checkout 展示进入前的商品、数量和 Subtotal。"""
@@ -1147,26 +1312,30 @@ class CartPage:
         self.assert_header_badge(expected_cart_quantity)
         if self.drawer.is_visible():
             if expected_cart_quantity == 0:
-                expect(self.drawer.locator(".ccd-item")).to_have_count(0)
+                expect(self.drawer.locator(".ccd-item:visible")).to_have_count(0)
             else:
                 expect(self.drawer.locator(".ccd-qty-num")).to_have_value(
                     str(expected_cart_quantity)
                 )
         if self.full_cart.is_visible():
             if expected_cart_quantity == 0:
-                expect(self.full_cart.locator(".cc-item")).to_have_count(0)
+                expect(self.full_cart.locator(".cc-item:visible")).to_have_count(0)
             else:
                 expect(self.full_cart.locator(".cc-qty-num")).to_have_value(
                     str(expected_cart_quantity)
                 )
 
-    def _checkout(self, button, source: str) -> None:
+    def _checkout(self, button, source: str, *, selector: str) -> None:
         """从指定购物车入口进入 Checkout；有副作用的点击只执行一次。"""
         self.home.close_popup_before_click()
         expect(button).to_be_visible()
         expect(button).to_be_enabled()
         self._pace_cart_request()
-        button.click()
+        self._click_visible_control(
+            selector,
+            description=f"{source}点击 Checkout",
+            allow_navigation=True,
+        )
         try:
             self.page.wait_for_url(self.CHECKOUT_URL, timeout=60_000)
         except PlaywrightTimeoutError as error:
