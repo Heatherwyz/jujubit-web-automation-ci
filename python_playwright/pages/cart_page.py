@@ -56,6 +56,11 @@ class CartPage:
         r"^Add \$[\d,]+(?:\.\d{2})? more to enjoy Free Shipping$"
     )
     QUALIFIED_SHIPPING_COPY = "You've qualified for free standard shipping"
+    # PC 结果区由前端 Portal 挂到左侧商品图容器，H5 则仍位于 Creator 根节点。
+    RESULT_VIEW_BUTTON_SELECTOR = (
+        "#jjb-create-canvas button, "
+        ".product-image-container > .jjb-app button"
+    )
     GENERATION_ERRORS = (
         "We couldn’t generate from this image. Please try a different one",
         "Taking longer than expected. Please try again.",
@@ -518,9 +523,8 @@ class CartPage:
     def _select_result_view(self, name: str) -> None:
         """切换 2D/3D，并由后续可见性断言确认真实结果。"""
         self.home.close_popup_before_click()
-        self._visible_button(name)
         self._click_visible_control(
-            "#jjb-create-canvas button",
+            self.RESULT_VIEW_BUTTON_SELECTOR,
             description=f"切换到 {name} 结果",
             exact_text=name,
         )
@@ -545,7 +549,7 @@ class CartPage:
         before_url = self.page.url
         try:
             target = self.page.evaluate(
-                """params => {
+                r"""params => {
                 const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
                 const isRendered = element => {
                     const style = getComputedStyle(element);
@@ -1204,15 +1208,11 @@ class CartPage:
             f"当前不是 Checkout 页面：{self.page.url}"
         )
         self.home.close_welcome_popup()
-        self._expand_checkout_summary()
         main = self.page.locator("main:visible").first
         expect(main).to_be_visible(timeout=30_000)
+        self._expand_checkout_summary(expected.title)
+        self._wait_for_visible_exact_text(expected.title, timeout=30_000)
         body = self.page.locator("body")
-        expect(body).to_contain_text(expected.title, timeout=30_000)
-        title_matches = self.page.get_by_text(expected.title, exact=True).all()
-        assert any(match.is_visible() for match in title_matches), (
-            f"Checkout 商品摘要未显示商品标题：{expected.title!r}"
-        )
         # Shopify 的 PC 订单摘要可能位于 main 外侧的 aside；body.inner_text 只包含
         # 实际展示的文本，因此可以同时覆盖 PC 和移动端展开后的摘要。
         summary_text = self._normalized_text(body)
@@ -1229,16 +1229,45 @@ class CartPage:
         )
         self.assert_page_integrity()
 
-    def _expand_checkout_summary(self) -> None:
+    def _expand_checkout_summary(self, product_title: str) -> None:
         """移动端 Checkout 默认可能折叠订单摘要，存在开关时将其展开。"""
-        toggle = self.page.get_by_role(
+        # 已展开时不要再次点击，避免 aria-expanded 缺失的主题实现被意外折叠。
+        if self._visible_exact_text(product_title):
+            return
+
+        toggles = self.page.get_by_role(
             "button",
-            name=re.compile(r"(?:show|view|open).*order summary", re.IGNORECASE),
-        ).first
-        if not toggle.count() or not toggle.is_visible():
+            name=re.compile(r"\border summary\b", re.IGNORECASE),
+        )
+        # Shopify 可能同时保留 PC/H5 两份结构，必须选择当前真正可见的按钮。
+        toggle = next(
+            (candidate for candidate in toggles.all() if candidate.is_visible()),
+            None,
+        )
+        if toggle is None:
             return
         if toggle.get_attribute("aria-expanded") != "true":
             toggle.click(no_wait_after=True)
+
+    def _visible_exact_text(self, text: str):
+        """返回完全匹配且当前可见的文本节点；隐藏的响应式副本不参与断言。"""
+        for match in self.page.get_by_text(text, exact=True).all():
+            try:
+                if match.is_visible():
+                    return match
+            except PlaywrightError:
+                # Checkout 展开动画可能替换节点，下一轮会重新获取最新 DOM。
+                continue
+        return None
+
+    def _wait_for_visible_exact_text(self, text: str, *, timeout: int) -> None:
+        """等待折叠动画结束并确认商品标题已真实展示给用户。"""
+        deadline = time.monotonic() + max(0, timeout) / 1_000
+        while time.monotonic() < deadline:
+            if self._visible_exact_text(text):
+                return
+            self.page.wait_for_timeout(100)
+        raise AssertionError(f"Checkout 商品摘要未显示商品标题：{text!r}")
 
     def _checkout_quantity_is_visible(self, title: str, quantity: int) -> bool:
         """在 Checkout 商品行中寻找可见的数量标记。"""

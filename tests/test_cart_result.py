@@ -193,6 +193,77 @@ class CartGeneratedResultTests(unittest.TestCase):
         page.mouse.click.assert_not_called()
         page.touchscreen.tap.assert_not_called()
 
+    def test_result_view_click_covers_pc_portal_and_h5_root(self) -> None:
+        """2D/3D 点击同时覆盖 PC Portal 与 H5 Creator，且只调用一次点击助手。"""
+        page = Mock()
+        cart = self._cart(page)
+        cart.home = Mock()
+        cart._click_visible_control = Mock()
+
+        cart._select_result_view("2D")
+
+        cart.home.close_popup_before_click.assert_called_once_with()
+        cart._click_visible_control.assert_called_once_with(
+            "#jjb-create-canvas button, "
+            ".product-image-container > .jjb-app button",
+            description="切换到 2D 结果",
+            exact_text="2D",
+        )
+
+    def test_checkout_summary_uses_visible_order_summary_button(self) -> None:
+        """按钮名称只有 Order summary 时，也应跳过隐藏副本并展开可见摘要。"""
+        page = Mock()
+        title_locator = Mock()
+        title_locator.all.return_value = []
+        page.get_by_text.return_value = title_locator
+        hidden_toggle = Mock()
+        hidden_toggle.is_visible.return_value = False
+        visible_toggle = Mock()
+        visible_toggle.is_visible.return_value = True
+        visible_toggle.get_attribute.return_value = "false"
+        toggles = Mock()
+        toggles.all.return_value = [hidden_toggle, visible_toggle]
+        page.get_by_role.return_value = toggles
+        cart = self._cart(page)
+
+        cart._expand_checkout_summary("JuJuBit product")
+
+        role, = page.get_by_role.call_args.args
+        self.assertEqual(role, "button")
+        self.assertRegex("Order summary", page.get_by_role.call_args.kwargs["name"])
+        hidden_toggle.click.assert_not_called()
+        visible_toggle.click.assert_called_once_with(no_wait_after=True)
+
+    def test_checkout_summary_does_not_collapse_visible_product(self) -> None:
+        """商品标题已经可见时不再点击摘要按钮，避免把展开内容重新折叠。"""
+        page = Mock()
+        visible_title = Mock()
+        visible_title.is_visible.return_value = True
+        title_locator = Mock()
+        title_locator.all.return_value = [visible_title]
+        page.get_by_text.return_value = title_locator
+        cart = self._cart(page)
+
+        cart._expand_checkout_summary("JuJuBit product")
+
+        page.get_by_role.assert_not_called()
+
+    def test_checkout_title_waits_for_expand_animation(self) -> None:
+        """展开动画替换节点时会重新读取 DOM，直到标题真正可见。"""
+        page = Mock()
+        hidden_title = Mock()
+        hidden_title.is_visible.return_value = False
+        visible_title = Mock()
+        visible_title.is_visible.return_value = True
+        title_locator = Mock()
+        title_locator.all.side_effect = [[hidden_title], [visible_title]]
+        page.get_by_text.return_value = title_locator
+        cart = self._cart(page)
+
+        cart._wait_for_visible_exact_text("JuJuBit product", timeout=1_000)
+
+        page.wait_for_timeout.assert_called_once_with(100)
+
 
 if __name__ == "__main__":
     unittest.main()
