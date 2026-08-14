@@ -548,57 +548,76 @@ class CartPage:
         }
         before_url = self.page.url
         try:
-            target = self.page.evaluate(
-                r"""params => {
-                const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
-                const isRendered = element => {
-                    const style = getComputedStyle(element);
+            target = {}
+            # React Portal 重渲染时可能短暂移除按钮；只重新取得坐标，绝不重放点击。
+            for acquisition_attempt in range(21):
+                target = self.page.evaluate(
+                    r"""params => {
+                    const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
+                    const isRendered = element => {
+                        const style = getComputedStyle(element);
+                        const rect = element.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && Number(style.opacity || 1) > 0
+                            && rect.width > 1
+                            && rect.height > 1;
+                    };
+                    const matches = [...document.querySelectorAll(params.selector)]
+                        .filter(isRendered)
+                        .filter(element => !params.exactText
+                            || normalize(element.textContent) === params.exactText);
+                    if (matches.length !== 1) {
+                        return {
+                            ok: false,
+                            matchCount: matches.length,
+                            reason: `匹配到 ${matches.length} 个可见控件`,
+                        };
+                    }
+                    const element = matches[0];
+                    if (element.disabled
+                        || element.getAttribute('aria-disabled') === 'true') {
+                        return {
+                            ok: false,
+                            matchCount: 1,
+                            reason: '控件处于禁用状态',
+                        };
+                    }
+                    element.scrollIntoView({
+                        block: 'center', inline: 'center', behavior: 'instant'
+                    });
                     const rect = element.getBoundingClientRect();
-                    return style.display !== 'none'
-                        && style.visibility !== 'hidden'
-                        && Number(style.opacity || 1) > 0
-                        && rect.width > 1
-                        && rect.height > 1;
-                };
-                const matches = [...document.querySelectorAll(params.selector)]
-                    .filter(isRendered)
-                    .filter(element => !params.exactText
-                        || normalize(element.textContent) === params.exactText);
-                if (matches.length !== 1) {
+                    const x = Math.max(
+                        0, Math.min(innerWidth - 1, rect.left + rect.width / 2)
+                    );
+                    const y = Math.max(
+                        0, Math.min(innerHeight - 1, rect.top + rect.height / 2)
+                    );
+                    const hit = document.elementFromPoint(x, y);
+                    if (!hit || (hit !== element && !element.contains(hit))) {
+                        return {
+                            ok: false,
+                            matchCount: 1,
+                            reason: '控件中心被其他元素遮挡',
+                            blocker: hit
+                                ? `${hit.tagName.toLowerCase()}.${hit.className || ''}`
+                                : '未命中页面元素',
+                        };
+                    }
                     return {
-                        ok: false,
-                        reason: `匹配到 ${matches.length} 个可见控件`,
+                        ok: true,
+                        matchCount: 1,
+                        x,
+                        y,
+                        coarsePointer: matchMedia('(pointer: coarse)').matches,
                     };
-                }
-                const element = matches[0];
-                if (element.disabled || element.getAttribute('aria-disabled') === 'true') {
-                    return {ok: false, reason: '控件处于禁用状态'};
-                }
-                element.scrollIntoView({
-                    block: 'center', inline: 'center', behavior: 'instant'
-                });
-                const rect = element.getBoundingClientRect();
-                const x = Math.max(0, Math.min(innerWidth - 1, rect.left + rect.width / 2));
-                const y = Math.max(0, Math.min(innerHeight - 1, rect.top + rect.height / 2));
-                const hit = document.elementFromPoint(x, y);
-                if (!hit || (hit !== element && !element.contains(hit))) {
-                    return {
-                        ok: false,
-                        reason: '控件中心被其他元素遮挡',
-                        blocker: hit
-                            ? `${hit.tagName.toLowerCase()}.${hit.className || ''}`
-                            : '未命中页面元素',
-                    };
-                }
-                return {
-                    ok: true,
-                    x,
-                    y,
-                    coarsePointer: matchMedia('(pointer: coarse)').matches,
-                };
-            }""",
-                params,
-            )
+                }""",
+                    params,
+                )
+                if target.get("ok") or target.get("matchCount") != 0:
+                    break
+                if acquisition_attempt < 20:
+                    self.page.wait_for_timeout(100)
             if target.get("ok"):
                 if target.get("coarsePointer"):
                     self.page.touchscreen.tap(target["x"], target["y"])
@@ -1229,25 +1248,40 @@ class CartPage:
         )
         self.assert_page_integrity()
 
-    def _expand_checkout_summary(self, product_title: str) -> None:
+    def _expand_checkout_summary(
+        self, product_title: str, *, timeout: int = 10_000
+    ) -> None:
         """移动端 Checkout 默认可能折叠订单摘要，存在开关时将其展开。"""
-        # 已展开时不要再次点击，避免 aria-expanded 缺失的主题实现被意外折叠。
-        if self._visible_exact_text(product_title):
-            return
+        attempts = max(1, timeout // 100 + 1)
+        for attempt in range(attempts):
+            # 已展开时不要再次点击，避免把可见摘要重新折叠。
+            if self._visible_exact_text(product_title):
+                return
 
-        toggles = self.page.get_by_role(
-            "button",
-            name=re.compile(r"\border summary\b", re.IGNORECASE),
-        )
-        # Shopify 可能同时保留 PC/H5 两份结构，必须选择当前真正可见的按钮。
-        toggle = next(
-            (candidate for candidate in toggles.all() if candidate.is_visible()),
-            None,
-        )
-        if toggle is None:
-            return
-        if toggle.get_attribute("aria-expanded") != "true":
-            toggle.click(no_wait_after=True)
+            toggles = self.page.get_by_role(
+                "button",
+                name=re.compile(r"\border summary\b", re.IGNORECASE),
+            )
+            visible_toggles = []
+            for candidate in toggles.all():
+                try:
+                    if candidate.is_visible():
+                        visible_toggles.append(candidate)
+                except PlaywrightError:
+                    # Checkout 首屏渲染可能替换响应式节点，下一轮重新获取。
+                    continue
+            if len(visible_toggles) > 1:
+                raise AssertionError(
+                    "Checkout 同时出现多个可见的 Order summary 按钮，无法安全展开"
+                )
+            if visible_toggles:
+                toggle = visible_toggles[0]
+                # 找到真实可见按钮后最多点击一次；展开动画由后续标题等待确认。
+                if toggle.get_attribute("aria-expanded") != "true":
+                    toggle.click(no_wait_after=True)
+                return
+            if attempt < attempts - 1:
+                self.page.wait_for_timeout(100)
 
     def _visible_exact_text(self, text: str):
         """返回完全匹配且当前可见的文本节点；隐藏的响应式副本不参与断言。"""

@@ -193,6 +193,80 @@ class CartGeneratedResultTests(unittest.TestCase):
         page.mouse.click.assert_not_called()
         page.touchscreen.tap.assert_not_called()
 
+    def test_dom_click_reacquires_coordinates_before_one_real_click(self) -> None:
+        """React 首次未挂载控件时只重取坐标，出现后仍只发送一次鼠标点击。"""
+        page = Mock()
+        page.evaluate.side_effect = [
+            {
+                "ok": False,
+                "matchCount": 0,
+                "reason": "匹配到 0 个可见控件",
+            },
+            {
+                "ok": True,
+                "matchCount": 1,
+                "x": 420,
+                "y": 160,
+                "coarsePointer": False,
+            },
+        ]
+        cart = self._cart(page)
+
+        cart._click_visible_control(
+            CartPage.RESULT_VIEW_BUTTON_SELECTOR,
+            description="切换到 2D 结果",
+            exact_text="2D",
+        )
+
+        self.assertEqual(page.evaluate.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(100)
+        page.mouse.click.assert_called_once_with(420, 160)
+        page.touchscreen.tap.assert_not_called()
+
+    def test_dom_click_does_not_retry_ambiguous_controls(self) -> None:
+        """多个可见候选属于选择器错误，必须立即失败且不能发送输入事件。"""
+        page = Mock()
+        page.evaluate.return_value = {
+            "ok": False,
+            "matchCount": 2,
+            "reason": "匹配到 2 个可见控件",
+        }
+        cart = self._cart(page)
+
+        with self.assertRaisesRegex(AssertionError, "匹配到 2 个可见控件"):
+            cart._click_visible_control(
+                CartPage.RESULT_VIEW_BUTTON_SELECTOR,
+                description="切换到 3D 结果",
+                exact_text="3D",
+            )
+
+        page.evaluate.assert_called_once()
+        page.wait_for_timeout.assert_not_called()
+        page.mouse.click.assert_not_called()
+        page.touchscreen.tap.assert_not_called()
+
+    def test_dom_click_stops_after_bounded_empty_reacquisition(self) -> None:
+        """控件持续未挂载时有界失败，且整个过程不发送任何点击。"""
+        page = Mock()
+        page.evaluate.return_value = {
+            "ok": False,
+            "matchCount": 0,
+            "reason": "匹配到 0 个可见控件",
+        }
+        cart = self._cart(page)
+
+        with self.assertRaisesRegex(AssertionError, "匹配到 0 个可见控件"):
+            cart._click_visible_control(
+                CartPage.RESULT_VIEW_BUTTON_SELECTOR,
+                description="切换到 2D 结果",
+                exact_text="2D",
+            )
+
+        self.assertEqual(page.evaluate.call_count, 21)
+        self.assertEqual(page.wait_for_timeout.call_count, 20)
+        page.mouse.click.assert_not_called()
+        page.touchscreen.tap.assert_not_called()
+
     def test_result_view_click_covers_pc_portal_and_h5_root(self) -> None:
         """2D/3D 点击同时覆盖 PC Portal 与 H5 Creator，且只调用一次点击助手。"""
         page = Mock()
@@ -233,6 +307,67 @@ class CartGeneratedResultTests(unittest.TestCase):
         self.assertRegex("Order summary", page.get_by_role.call_args.kwargs["name"])
         hidden_toggle.click.assert_not_called()
         visible_toggle.click.assert_called_once_with(no_wait_after=True)
+
+    def test_checkout_summary_waits_for_delayed_toggle(self) -> None:
+        """Checkout 主体先出现、摘要按钮后挂载时会重新查找但只点击一次。"""
+        page = Mock()
+        title_locator = Mock()
+        title_locator.all.return_value = []
+        page.get_by_text.return_value = title_locator
+        empty_toggles = Mock()
+        empty_toggles.all.return_value = []
+        visible_toggle = Mock()
+        visible_toggle.is_visible.return_value = True
+        visible_toggle.get_attribute.return_value = "false"
+        mounted_toggles = Mock()
+        mounted_toggles.all.return_value = [visible_toggle]
+        page.get_by_role.side_effect = [empty_toggles, mounted_toggles]
+        cart = self._cart(page)
+
+        cart._expand_checkout_summary("JuJuBit product", timeout=1_000)
+
+        self.assertEqual(page.get_by_role.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(100)
+        visible_toggle.click.assert_called_once_with(no_wait_after=True)
+
+    def test_checkout_summary_rejects_multiple_visible_toggles(self) -> None:
+        """多个可见摘要开关无法确认目标区域时应失败，不能任选一个点击。"""
+        page = Mock()
+        title_locator = Mock()
+        title_locator.all.return_value = []
+        page.get_by_text.return_value = title_locator
+        first_toggle = Mock()
+        first_toggle.is_visible.return_value = True
+        second_toggle = Mock()
+        second_toggle.is_visible.return_value = True
+        toggles = Mock()
+        toggles.all.return_value = [first_toggle, second_toggle]
+        page.get_by_role.return_value = toggles
+        cart = self._cart(page)
+
+        with self.assertRaisesRegex(AssertionError, "多个可见"):
+            cart._expand_checkout_summary("JuJuBit product")
+
+        first_toggle.click.assert_not_called()
+        second_toggle.click.assert_not_called()
+
+    def test_checkout_summary_does_not_click_expanded_toggle(self) -> None:
+        """按钮已标记展开但标题仍在动画中时等待标题，不重复点击。"""
+        page = Mock()
+        title_locator = Mock()
+        title_locator.all.return_value = []
+        page.get_by_text.return_value = title_locator
+        expanded_toggle = Mock()
+        expanded_toggle.is_visible.return_value = True
+        expanded_toggle.get_attribute.return_value = "true"
+        toggles = Mock()
+        toggles.all.return_value = [expanded_toggle]
+        page.get_by_role.return_value = toggles
+        cart = self._cart(page)
+
+        cart._expand_checkout_summary("JuJuBit product")
+
+        expanded_toggle.click.assert_not_called()
 
     def test_checkout_summary_does_not_collapse_visible_product(self) -> None:
         """商品标题已经可见时不再点击摘要按钮，避免把展开内容重新折叠。"""
