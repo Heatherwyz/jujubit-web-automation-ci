@@ -1593,7 +1593,17 @@ class CartPage:
         self.assert_header_badge(expected_cart_quantity)
         expect(self.drawer).to_be_visible()
         expect(self.drawer_item.locator(".ccd-item-title")).to_have_text(before.title)
-        expect(self.drawer_item.locator(".ccd-item-variant")).to_have_text(before.variant)
+        # 规格的两个 div 在 innerText 中带换行，但 Playwright 的 textContent
+        # 会直接拼接。比较时忽略节点边界产生的空白，避免把同一可见文案误报。
+        actual_variant = self._normalized_text(
+            self.drawer_item.locator(".ccd-item-variant")
+        )
+        actual_variant_key = self._text_without_whitespace(actual_variant)
+        expected_variant_key = self._text_without_whitespace(before.variant)
+        assert actual_variant_key == expected_variant_key, (
+            "change 失败后商品规格与失败前不一致："
+            f"before={before.variant!r}, actual={actual_variant!r}"
+        )
         expect(self.drawer.locator(".ccd-subtotal-val")).to_have_text(before.subtotal)
         expect(self.drawer.locator(".ccd-checkout")).to_have_text(
             f"Checkout ({expected_cart_quantity})"
@@ -1706,6 +1716,11 @@ class CartPage:
     def _normalized_money(text: str) -> str:
         """金额比较忽略千分位和空白，但保留币种符号与小数。"""
         return re.sub(r"[\s,]", "", text)
+
+    @staticmethod
+    def _text_without_whitespace(text: str) -> str:
+        """忽略相邻 DOM 节点边界产生的空白，仅比较用户可见字符。"""
+        return re.sub(r"\s+", "", text)
 
     @staticmethod
     def _normalized_image_path(image_url: str) -> str:

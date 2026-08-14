@@ -568,5 +568,14 @@ class CartGeneratedResultTests(unittest.TestCase):
         self.assertEqual(page.evaluate.call_count, 4)
         self.assertEqual(page.wait_for_timeout.call_count, 3)
 
+    def test_variant_comparison_ignores_dom_node_boundary_whitespace(self) -> None:
+        """块级规格节点拼接时有无空格，都应视为同一用户可见文案。"""
+        cart = self._cart(Mock())
+
+        expected = cart._text_without_whitespace("Size: 6cm Best Fit Character: 1")
+        actual = cart._text_without_whitespace("Size: 6cm Best FitCharacter: 1")
+
+        self.assertEqual(actual, expected)
+
 if __name__ == "__main__":
     unittest.main()
