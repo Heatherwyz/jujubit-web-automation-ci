@@ -284,28 +284,39 @@ class CartGeneratedResultTests(unittest.TestCase):
             exact_text="2D",
         )
 
-    def test_checkout_summary_uses_visible_order_summary_button(self) -> None:
-        """按钮名称只有 Order summary 时，也应跳过隐藏副本并展开可见摘要。"""
+    @staticmethod
+    def _checkout_toggle_state(*, expanded: str = "false", **overrides):
+        state = {
+            "controlsId": "disclosure_details",
+            "controlsExists": True,
+            "rendered": True,
+            "inViewport": True,
+            "hitTarget": True,
+            "expanded": expanded,
+        }
+        state.update(overrides)
+        return state
+
+    def test_checkout_summary_uses_semantic_order_summary_button(self) -> None:
+        """宽泛角色存在副本时，只点击语义完整且真正可操作的摘要按钮。"""
         page = Mock()
         title_locator = Mock()
         title_locator.all.return_value = []
         page.get_by_text.return_value = title_locator
-        hidden_toggle = Mock()
-        hidden_toggle.is_visible.return_value = False
+        broad_role_matches = Mock()
+        broad_role_matches.count.return_value = 2
+        page.get_by_role.return_value = broad_role_matches
         visible_toggle = Mock()
-        visible_toggle.is_visible.return_value = True
-        visible_toggle.get_attribute.return_value = "false"
+        visible_toggle.evaluate.return_value = self._checkout_toggle_state()
         toggles = Mock()
-        toggles.all.return_value = [hidden_toggle, visible_toggle]
-        page.get_by_role.return_value = toggles
+        toggles.all.return_value = [visible_toggle]
+        page.locator.return_value = toggles
         cart = self._cart(page)
 
         cart._expand_checkout_summary("JuJuBit product")
 
-        role, = page.get_by_role.call_args.args
-        self.assertEqual(role, "button")
-        self.assertRegex("Order summary", page.get_by_role.call_args.kwargs["name"])
-        hidden_toggle.click.assert_not_called()
+        page.locator.assert_called_once_with(CartPage.CHECKOUT_SUMMARY_TOGGLE_SELECTOR)
+        page.get_by_role.assert_not_called()
         visible_toggle.click.assert_called_once_with(no_wait_after=True)
 
     def test_checkout_summary_waits_for_delayed_toggle(self) -> None:
@@ -317,39 +328,63 @@ class CartGeneratedResultTests(unittest.TestCase):
         empty_toggles = Mock()
         empty_toggles.all.return_value = []
         visible_toggle = Mock()
-        visible_toggle.is_visible.return_value = True
-        visible_toggle.get_attribute.return_value = "false"
+        visible_toggle.evaluate.return_value = self._checkout_toggle_state()
         mounted_toggles = Mock()
         mounted_toggles.all.return_value = [visible_toggle]
-        page.get_by_role.side_effect = [empty_toggles, mounted_toggles]
+        page.locator.side_effect = [empty_toggles, mounted_toggles]
         cart = self._cart(page)
 
         cart._expand_checkout_summary("JuJuBit product", timeout=1_000)
 
-        self.assertEqual(page.get_by_role.call_count, 2)
+        self.assertEqual(page.locator.call_count, 2)
         page.wait_for_timeout.assert_called_once_with(100)
         visible_toggle.click.assert_called_once_with(no_wait_after=True)
 
     def test_checkout_summary_rejects_multiple_visible_toggles(self) -> None:
-        """多个可见摘要开关无法确认目标区域时应失败，不能任选一个点击。"""
+        """当前视口内有多个摘要开关时应失败，不能任选一个点击。"""
         page = Mock()
         title_locator = Mock()
         title_locator.all.return_value = []
         page.get_by_text.return_value = title_locator
         first_toggle = Mock()
-        first_toggle.is_visible.return_value = True
+        first_toggle.evaluate.return_value = self._checkout_toggle_state()
         second_toggle = Mock()
-        second_toggle.is_visible.return_value = True
+        second_toggle.evaluate.return_value = self._checkout_toggle_state(
+            controlsId="other_details"
+        )
         toggles = Mock()
         toggles.all.return_value = [first_toggle, second_toggle]
-        page.get_by_role.return_value = toggles
+        page.locator.return_value = toggles
         cart = self._cart(page)
 
-        with self.assertRaisesRegex(AssertionError, "多个可见"):
+        with self.assertRaisesRegex(AssertionError, "当前视口同时出现多个可操作"):
             cart._expand_checkout_summary("JuJuBit product")
 
         first_toggle.click.assert_not_called()
         second_toggle.click.assert_not_called()
+
+    def test_checkout_summary_ignores_offscreen_responsive_duplicate(self) -> None:
+        """页面外的响应式副本不应阻止点击当前视口中的真实摘要按钮。"""
+        page = Mock()
+        title_locator = Mock()
+        title_locator.all.return_value = []
+        page.get_by_text.return_value = title_locator
+        viewport_toggle = Mock()
+        viewport_toggle.evaluate.return_value = self._checkout_toggle_state()
+        offscreen_toggle = Mock()
+        offscreen_toggle.evaluate.return_value = self._checkout_toggle_state(
+            inViewport=False,
+            hitTarget=False,
+        )
+        toggles = Mock()
+        toggles.all.return_value = [viewport_toggle, offscreen_toggle]
+        page.locator.return_value = toggles
+        cart = self._cart(page)
+
+        cart._expand_checkout_summary("JuJuBit product")
+
+        viewport_toggle.click.assert_called_once_with(no_wait_after=True)
+        offscreen_toggle.click.assert_not_called()
 
     def test_checkout_summary_does_not_click_expanded_toggle(self) -> None:
         """按钮已标记展开但标题仍在动画中时等待标题，不重复点击。"""
@@ -358,16 +393,37 @@ class CartGeneratedResultTests(unittest.TestCase):
         title_locator.all.return_value = []
         page.get_by_text.return_value = title_locator
         expanded_toggle = Mock()
-        expanded_toggle.is_visible.return_value = True
-        expanded_toggle.get_attribute.return_value = "true"
+        expanded_toggle.evaluate.return_value = self._checkout_toggle_state(
+            expanded="true"
+        )
         toggles = Mock()
         toggles.all.return_value = [expanded_toggle]
-        page.get_by_role.return_value = toggles
+        page.locator.return_value = toggles
         cart = self._cart(page)
 
         cart._expand_checkout_summary("JuJuBit product")
 
         expanded_toggle.click.assert_not_called()
+
+    def test_checkout_summary_rejects_missing_controlled_panel(self) -> None:
+        """aria-controls 目标不存在时不能点击伪摘要按钮。"""
+        page = Mock()
+        title_locator = Mock()
+        title_locator.all.return_value = []
+        page.get_by_text.return_value = title_locator
+        invalid_toggle = Mock()
+        invalid_toggle.evaluate.return_value = self._checkout_toggle_state(
+            controlsExists=False
+        )
+        toggles = Mock()
+        toggles.all.return_value = [invalid_toggle]
+        page.locator.return_value = toggles
+        cart = self._cart(page)
+
+        with self.assertRaisesRegex(AssertionError, "aria-controls 未指向有效摘要区域"):
+            cart._expand_checkout_summary("JuJuBit product", timeout=100)
+
+        invalid_toggle.click.assert_not_called()
 
     def test_checkout_summary_does_not_collapse_visible_product(self) -> None:
         """商品标题已经可见时不再点击摘要按钮，避免把展开内容重新折叠。"""
@@ -381,7 +437,7 @@ class CartGeneratedResultTests(unittest.TestCase):
 
         cart._expand_checkout_summary("JuJuBit product")
 
-        page.get_by_role.assert_not_called()
+        page.locator.assert_not_called()
 
     def test_checkout_title_waits_for_expand_animation(self) -> None:
         """展开动画替换节点时会重新读取 DOM，直到标题真正可见。"""
@@ -398,6 +454,63 @@ class CartGeneratedResultTests(unittest.TestCase):
         cart._wait_for_visible_exact_text("JuJuBit product", timeout=1_000)
 
         page.wait_for_timeout.assert_called_once_with(100)
+
+    def test_drawer_snapshot_reads_all_fields_from_one_dom_frame(self) -> None:
+        """快照先原子读取完整字段，再执行可重定位的页面断言。"""
+        page = Mock()
+        page.evaluate.return_value = {
+            "ready": True,
+            "title": " JuJuBit  Customized Figurine ",
+            "variant": " Size: 6cm Best Fit ",
+            "quantity": "2",
+            "subtotal": " $119.00 ",
+            "shipping": " You've qualified for free standard shipping ",
+            "imageUrl": "https://cdn.jujubit.ai/generated/result.png",
+        }
+        cart = self._cart(page)
+        cart.assert_drawer_cart = Mock()
+
+        snapshot = cart.drawer_snapshot()
+
+        self.assertEqual(snapshot.title, "JuJuBit Customized Figurine")
+        self.assertEqual(snapshot.variant, "Size: 6cm Best Fit")
+        self.assertEqual(snapshot.quantity, 2)
+        self.assertEqual(snapshot.subtotal, "$119.00")
+        self.assertEqual(
+            snapshot.shipping, "You've qualified for free standard shipping"
+        )
+        self.assertEqual(
+            snapshot.image_url, "https://cdn.jujubit.ai/generated/result.png"
+        )
+        cart.assert_drawer_cart.assert_called_once_with(2)
+        script = page.evaluate.call_args.args[0]
+        self.assertIn("document.querySelectorAll('.ccd.is-open')", script)
+        self.assertIn("return {ready: true, ...data}", script)
+
+    def test_drawer_snapshot_retries_during_component_redraw(self) -> None:
+        """商品节点短暂被替换时只重读 DOM，不重复任何购物车操作。"""
+        page = Mock()
+        page.evaluate.side_effect = [
+            {"ready": False, "reason": "可见商品数量为 0"},
+            {
+                "ready": True,
+                "title": "JuJuBit Customized Figurine",
+                "variant": "Size: 6cm Best Fit",
+                "quantity": "1",
+                "subtotal": "$59.50",
+                "shipping": "Add $39.50 more to enjoy Free Shipping",
+                "imageUrl": "https://cdn.jujubit.ai/generated/result.png",
+            },
+        ]
+        cart = self._cart(page)
+        cart.assert_drawer_cart = Mock()
+
+        snapshot = cart.drawer_snapshot()
+
+        self.assertEqual(snapshot.quantity, 1)
+        self.assertEqual(page.evaluate.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(100)
+        cart.assert_drawer_cart.assert_called_once_with(1)
 
 
 if __name__ == "__main__":

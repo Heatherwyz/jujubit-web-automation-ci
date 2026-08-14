@@ -61,6 +61,9 @@ class CartPage:
         "#jjb-create-canvas button, "
         ".product-image-container > .jjb-app button"
     )
+    CHECKOUT_SUMMARY_TOGGLE_SELECTOR = (
+        'button[aria-controls][aria-expanded][data-event-name^="order_summary_"]'
+    )
     GENERATION_ERRORS = (
         "We couldn’t generate from this image. Please try a different one",
         "Taking longer than expected. Please try again.",
@@ -936,15 +939,88 @@ class CartPage:
         expect(self.drawer).not_to_be_visible()
 
     def drawer_snapshot(self) -> CartSnapshot:
-        """读取半屏购物车的用户可见数据。"""
-        self.assert_drawer_cart(int(self.drawer.locator(".ccd-qty-num").input_value()))
-        return CartSnapshot(
-            title=self._normalized_text(self.drawer_item.locator(".ccd-item-title")),
-            variant=self._normalized_text(self.drawer_item.locator(".ccd-item-variant")),
-            quantity=int(self.drawer.locator(".ccd-qty-num").input_value()),
-            subtotal=self._normalized_text(self.drawer.locator(".ccd-subtotal-val")),
-            shipping=self._shipping_text(self.drawer.locator(".ccd-shipping-text")),
-            image_url=self.drawer_item.locator(".ccd-item-img").get_attribute("src") or "",
+        """读取半屏购物车同一帧中的用户可见数据。"""
+        data = self._wait_for_drawer_snapshot_data()
+        snapshot = CartSnapshot(
+            title=self._normalized_text(data["title"]),
+            variant=self._normalized_text(data["variant"]),
+            quantity=int(data["quantity"]),
+            subtotal=self._normalized_text(data["subtotal"]),
+            shipping=self._shipping_text(data["shipping"]),
+            image_url=data["imageUrl"],
+        )
+        # 数量更新会整体替换商品节点。先原子读取快照，再用可重定位的断言检查
+        # 页面完整性，避免两轮逐字段读取刚好跨过重绘窗口。
+        self.assert_drawer_cart(snapshot.quantity)
+        return snapshot
+
+    def _wait_for_drawer_snapshot_data(self, *, timeout: int = 30_000) -> dict[str, Any]:
+        """等待半屏购物车重绘完成，并原子读取一份完整 DOM 快照。"""
+        attempts = max(1, timeout // 100 + 1)
+        last_state: dict[str, Any] = {}
+        for attempt in range(attempts):
+            state = self.page.evaluate(
+                r"""() => {
+                    const isRendered = element => {
+                        const style = getComputedStyle(element);
+                        const rect = element.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && Number(style.opacity || 1) > 0
+                            && rect.width > 1
+                            && rect.height > 1;
+                    };
+                    const roots = [...document.querySelectorAll('.ccd.is-open')]
+                        .filter(isRendered);
+                    if (roots.length !== 1) {
+                        return {
+                            ready: false,
+                            reason: `可见半屏购物车数量为 ${roots.length}`,
+                        };
+                    }
+                    const root = roots[0];
+                    const items = [...root.querySelectorAll('.ccd-item')]
+                        .filter(isRendered);
+                    if (items.length !== 1) {
+                        return {
+                            ready: false,
+                            reason: `可见商品数量为 ${items.length}`,
+                        };
+                    }
+                    const item = items[0];
+                    const text = (scope, selector) =>
+                        (scope.querySelector(selector)?.innerText || '').trim();
+                    const quantity = root.querySelector('.ccd-qty-num')?.value || '';
+                    const image = item.querySelector('.ccd-item-img');
+                    const data = {
+                        title: text(item, '.ccd-item-title'),
+                        variant: text(item, '.ccd-item-variant'),
+                        quantity,
+                        subtotal: text(root, '.ccd-subtotal-val'),
+                        shipping: text(root, '.ccd-shipping-text'),
+                        imageUrl: image?.getAttribute('src') || image?.currentSrc || '',
+                    };
+                    const missing = Object.entries(data)
+                        .filter(([, value]) => !String(value || '').trim())
+                        .map(([key]) => key);
+                    if (!/^\d+$/.test(quantity)) missing.push('quantity');
+                    if (missing.length) {
+                        return {
+                            ready: false,
+                            reason: `字段尚未完成渲染：${[...new Set(missing)].join(', ')}`,
+                        };
+                    }
+                    return {ready: true, ...data};
+                }"""
+            )
+            last_state = state or {}
+            if last_state.get("ready"):
+                return last_state
+            if attempt < attempts - 1:
+                self.page.wait_for_timeout(100)
+        raise AssertionError(
+            "半屏购物车重绘后未恢复完整快照："
+            f"{last_state.get('reason', '未返回可读状态')}"
         )
 
     def assert_drawer_discount_fields(self) -> None:
@@ -1253,35 +1329,86 @@ class CartPage:
     ) -> None:
         """移动端 Checkout 默认可能折叠订单摘要，存在开关时将其展开。"""
         attempts = max(1, timeout // 100 + 1)
+        last_reason = "未找到订单摘要语义按钮"
         for attempt in range(attempts):
             # 已展开时不要再次点击，避免把可见摘要重新折叠。
             if self._visible_exact_text(product_title):
                 return
 
-            toggles = self.page.get_by_role(
-                "button",
-                name=re.compile(r"\border summary\b", re.IGNORECASE),
-            )
-            visible_toggles = []
+            toggles = self.page.locator(self.CHECKOUT_SUMMARY_TOGGLE_SELECTOR)
+            interactive_toggles = []
             for candidate in toggles.all():
                 try:
-                    if candidate.is_visible():
-                        visible_toggles.append(candidate)
+                    state = self._checkout_toggle_state(candidate)
                 except PlaywrightError:
                     # Checkout 首屏渲染可能替换响应式节点，下一轮重新获取。
                     continue
-            if len(visible_toggles) > 1:
+                if not state.get("controlsExists"):
+                    last_reason = (
+                        "Order summary 的 aria-controls 未指向有效摘要区域："
+                        f"{state.get('controlsId') or '空'}"
+                    )
+                    continue
+                if not state.get("rendered"):
+                    last_reason = "Order summary 按钮尚未渲染"
+                    continue
+                if not state.get("inViewport"):
+                    last_reason = "Order summary 按钮仍位于当前视口外"
+                    continue
+                if not state.get("hitTarget"):
+                    last_reason = "Order summary 按钮中心被其他元素遮挡"
+                    continue
+                interactive_toggles.append((candidate, state))
+            if len(interactive_toggles) > 1:
                 raise AssertionError(
-                    "Checkout 同时出现多个可见的 Order summary 按钮，无法安全展开"
+                    "Checkout 当前视口同时出现多个可操作的 Order summary 按钮，"
+                    "无法安全展开"
                 )
-            if visible_toggles:
-                toggle = visible_toggles[0]
-                # 找到真实可见按钮后最多点击一次；展开动画由后续标题等待确认。
-                if toggle.get_attribute("aria-expanded") != "true":
+            if interactive_toggles:
+                toggle, state = interactive_toggles[0]
+                # 找到语义完整、未遮挡的真实按钮后最多点击一次；展开动画由后续
+                # 标题等待确认，不能因响应式副本存在而重复点击。
+                if state.get("expanded") != "true":
                     toggle.click(no_wait_after=True)
                 return
             if attempt < attempts - 1:
                 self.page.wait_for_timeout(100)
+        raise AssertionError(f"Checkout 无法展开订单摘要：{last_reason}")
+
+    @staticmethod
+    def _checkout_toggle_state(toggle) -> dict[str, Any]:
+        """读取摘要按钮的语义、视口位置和真实命中状态。"""
+        return toggle.evaluate(
+            """button => {
+                const style = getComputedStyle(button);
+                const rect = button.getBoundingClientRect();
+                const controlsId = button.getAttribute('aria-controls') || '';
+                const controlsExists = Boolean(
+                    controlsId && document.getElementById(controlsId)
+                );
+                const rendered = style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && Number(style.opacity || 1) > 0
+                    && rect.width > 1
+                    && rect.height > 1;
+                const left = Math.max(0, rect.left);
+                const right = Math.min(innerWidth, rect.right);
+                const top = Math.max(0, rect.top);
+                const bottom = Math.min(innerHeight, rect.bottom);
+                const inViewport = rendered && right > left && bottom > top;
+                const hit = inViewport
+                    ? document.elementFromPoint((left + right) / 2, (top + bottom) / 2)
+                    : null;
+                return {
+                    controlsId,
+                    controlsExists,
+                    rendered,
+                    inViewport,
+                    hitTarget: Boolean(hit && (hit === button || button.contains(hit))),
+                    expanded: button.getAttribute('aria-expanded') || '',
+                };
+            }"""
+        )
 
     def _visible_exact_text(self, text: str):
         """返回完全匹配且当前可见的文本节点；隐藏的响应式副本不参与断言。"""
@@ -1377,16 +1504,79 @@ class CartPage:
             if expected_cart_quantity == 0:
                 expect(self.drawer.locator(".ccd-item:visible")).to_have_count(0)
             else:
-                expect(self.drawer.locator(".ccd-qty-num")).to_have_value(
-                    str(expected_cart_quantity)
-                )
+                quantity_input = self.drawer.locator(".ccd-qty-num")
+                actual_value = quantity_input.input_value()
+                if actual_value != str(expected_cart_quantity):
+                    self._record_quantity_mismatch_evidence(
+                        self.drawer.locator(".ccd-qty"),
+                        selector=".ccd.is-open .ccd-qty",
+                        expected=expected_cart_quantity,
+                        actual=actual_value,
+                    )
+                expect(quantity_input).to_have_value(str(expected_cart_quantity))
         if self.full_cart.is_visible():
             if expected_cart_quantity == 0:
                 expect(self.full_cart.locator(".cc-item:visible")).to_have_count(0)
             else:
-                expect(self.full_cart.locator(".cc-qty-num")).to_have_value(
-                    str(expected_cart_quantity)
-                )
+                quantity_input = self.full_cart.locator(".cc-qty-num")
+                actual_value = quantity_input.input_value()
+                if actual_value != str(expected_cart_quantity):
+                    self._record_quantity_mismatch_evidence(
+                        self.full_cart.locator(".cc-qty"),
+                        selector="custom-cart .cc .cc-qty",
+                        expected=expected_cart_quantity,
+                        actual=actual_value,
+                    )
+                expect(quantity_input).to_have_value(str(expected_cart_quantity))
+
+    def _record_quantity_mismatch_evidence(
+        self, locator, *, selector: str, expected: int, actual: str
+    ) -> None:
+        """在失败截图中标出数量控件，并记录服务端与界面的差异。"""
+        try:
+            locator.scroll_into_view_if_needed()
+            locator.evaluate(
+                """(element, data) => {
+                    const old = document.getElementById('jujubit-test-evidence-label');
+                    if (old) old.remove();
+                    element.style.setProperty('outline', '5px solid #ff2d2d', 'important');
+                    element.style.setProperty(
+                        'background-color', 'rgba(255, 45, 45, 0.16)', 'important'
+                    );
+                    const rect = element.getBoundingClientRect();
+                    const label = document.createElement('div');
+                    label.id = 'jujubit-test-evidence-label';
+                    label.textContent = `数量错误：期望 ${data.expected}，实际 ${data.actual}`;
+                    Object.assign(label.style, {
+                        position: 'fixed', zIndex: '2147483646',
+                        left: `${Math.max(8, Math.min(rect.left, innerWidth - 220))}px`,
+                        top: `${Math.max(8, rect.top - 34)}px`, padding: '5px 9px',
+                        background: '#ff2d2d', color: '#fff', borderRadius: '4px',
+                        font: 'bold 13px/1.2 Arial, sans-serif', pointerEvents: 'none',
+                    });
+                    document.body.appendChild(label);
+                    window.__jujubitTestEvidence = {
+                        note: `服务端数量为 ${data.expected}，界面仍显示 ${data.actual}`,
+                        selector: data.selector,
+                        tag: element.tagName.toLowerCase(),
+                        text: label.textContent,
+                        attributes: {
+                            expectedQuantity: String(data.expected),
+                            actualQuantity: String(data.actual),
+                            class: element.className || '',
+                        },
+                        box: {
+                            x: Math.round(rect.left + scrollX),
+                            y: Math.round(rect.top + scrollY),
+                            width: Math.round(rect.width), height: Math.round(rect.height),
+                        },
+                    };
+                }""",
+                {"selector": selector, "expected": expected, "actual": actual},
+            )
+        except Exception:
+            # 证据标注失败不能覆盖原始购物车一致性断言。
+            pass
 
     def _checkout(self, button, source: str, *, selector: str) -> None:
         """从指定购物车入口进入 Checkout；有副作用的点击只执行一次。"""
