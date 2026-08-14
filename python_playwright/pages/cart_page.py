@@ -938,9 +938,13 @@ class CartPage:
         )
         expect(self.drawer).not_to_be_visible()
 
-    def drawer_snapshot(self) -> CartSnapshot:
-        """读取半屏购物车同一帧中的用户可见数据。"""
-        data = self._wait_for_drawer_snapshot_data()
+    def drawer_snapshot(
+        self, *, expected_quantity: Optional[int] = None
+    ) -> CartSnapshot:
+        """等待目标数量稳定后，读取半屏购物车同一帧中的可见数据。"""
+        data = self._wait_for_drawer_snapshot_data(
+            expected_quantity=expected_quantity
+        )
         snapshot = CartSnapshot(
             title=self._normalized_text(data["title"]),
             variant=self._normalized_text(data["variant"]),
@@ -954,10 +958,18 @@ class CartPage:
         self.assert_drawer_cart(snapshot.quantity)
         return snapshot
 
-    def _wait_for_drawer_snapshot_data(self, *, timeout: int = 30_000) -> dict[str, Any]:
-        """等待半屏购物车重绘完成，并原子读取一份完整 DOM 快照。"""
+    def _wait_for_drawer_snapshot_data(
+        self,
+        *,
+        expected_quantity: Optional[int] = None,
+        timeout: int = 30_000,
+        stable_reads: int = 2,
+    ) -> dict[str, Any]:
+        """等待目标数量和汇总连续稳定，再返回一份原子 DOM 快照。"""
         attempts = max(1, timeout // 100 + 1)
         last_state: dict[str, Any] = {}
+        previous_data: Optional[dict[str, Any]] = None
+        stable_count = 0
         for attempt in range(attempts):
             state = self.page.evaluate(
                 r"""() => {
@@ -1015,11 +1027,50 @@ class CartPage:
             )
             last_state = state or {}
             if last_state.get("ready"):
-                return last_state
+                actual_quantity = int(last_state["quantity"])
+                if (
+                    expected_quantity is not None
+                    and actual_quantity != expected_quantity
+                ):
+                    last_state["reason"] = (
+                        f"数量尚未达到目标：期望 {expected_quantity}，"
+                        f"实际 {actual_quantity}"
+                    )
+                    previous_data = None
+                    stable_count = 0
+                else:
+                    current_data = {
+                        key: last_state[key]
+                        for key in (
+                            "title",
+                            "variant",
+                            "quantity",
+                            "subtotal",
+                            "shipping",
+                            "imageUrl",
+                        )
+                    }
+                    if current_data == previous_data:
+                        stable_count += 1
+                    else:
+                        previous_data = current_data
+                        stable_count = 1
+                    if stable_count >= max(1, stable_reads):
+                        return last_state
+                    last_state["reason"] = (
+                        "购物车字段已完整，但尚未连续稳定："
+                        f"{stable_count}/{max(1, stable_reads)}"
+                    )
+            else:
+                previous_data = None
+                stable_count = 0
             if attempt < attempts - 1:
                 self.page.wait_for_timeout(100)
+        expected_note = (
+            f"，目标数量为 {expected_quantity}" if expected_quantity is not None else ""
+        )
         raise AssertionError(
-            "半屏购物车重绘后未恢复完整快照："
+            f"半屏购物车重绘后未恢复稳定快照{expected_note}："
             f"{last_state.get('reason', '未返回可读状态')}"
         )
 
@@ -1528,6 +1579,86 @@ class CartPage:
                         actual=actual_value,
                     )
                 expect(quantity_input).to_have_value(str(expected_cart_quantity))
+
+    def assert_failed_quantity_change_recovered(
+        self, before: CartSnapshot, *, expected_cart_quantity: int
+    ) -> None:
+        """确认数量接口失败后，用户可见控件已退出加载并恢复原购物车状态。"""
+        quantity_control = self.drawer.locator(".ccd-qty")
+        try:
+            expect(quantity_control).not_to_have_class(
+                re.compile(r"\bis-loading\b"), timeout=10_000
+            )
+        except AssertionError as error:
+            self._record_quantity_loading_evidence(
+                quantity_control,
+                selector=".ccd.is-open .ccd-qty.is-loading",
+                expected=before.quantity,
+            )
+            raise AssertionError(
+                "cart/change.js 返回失败后，数量控件持续加载且未恢复操作；"
+                "服务端数量、金额虽保持原值，但用户无法继续修改数量。"
+            ) from error
+
+        restored = self.drawer_snapshot(expected_quantity=expected_cart_quantity)
+        assert restored.title == before.title, "失败后商品标题未恢复到失败前状态"
+        assert restored.variant == before.variant, "失败后商品规格未恢复到失败前状态"
+        assert restored.quantity == before.quantity, "失败后商品数量未恢复到失败前状态"
+        assert restored.subtotal == before.subtotal, "失败后 Subtotal 未恢复到失败前状态"
+        assert restored.shipping == before.shipping, "失败后包邮提示未恢复到失败前状态"
+        restored_image_path = self._normalized_image_path(restored.image_url)
+        before_image_path = self._normalized_image_path(before.image_url)
+        assert restored_image_path == before_image_path, "失败后商品图片未恢复到失败前状态"
+        self.assert_page_integrity(expected_cart_quantity=expected_cart_quantity)
+
+    def _record_quantity_loading_evidence(
+        self, locator, *, selector: str, expected: int
+    ) -> None:
+        """在失败截图中标出卡住的数量加载控件。"""
+        try:
+            locator.scroll_into_view_if_needed()
+            locator.evaluate(
+                """(element, data) => {
+                    const old = document.getElementById('jujubit-test-evidence-label');
+                    if (old) old.remove();
+                    element.style.setProperty('outline', '5px solid #ff2d2d', 'important');
+                    element.style.setProperty(
+                        'background-color', 'rgba(255, 45, 45, 0.16)', 'important'
+                    );
+                    const rect = element.getBoundingClientRect();
+                    const label = document.createElement('div');
+                    label.id = 'jujubit-test-evidence-label';
+                    label.textContent = `数量控件持续加载：应恢复为 ${data.expected}`;
+                    Object.assign(label.style, {
+                        position: 'fixed', zIndex: '2147483646',
+                        left: `${Math.max(8, Math.min(rect.left, innerWidth - 270))}px`,
+                        top: `${Math.max(8, rect.top - 34)}px`, padding: '5px 9px',
+                        background: '#ff2d2d', color: '#fff', borderRadius: '4px',
+                        font: 'bold 13px/1.2 Arial, sans-serif', pointerEvents: 'none',
+                    });
+                    document.body.appendChild(label);
+                    window.__jujubitTestEvidence = {
+                        note: `cart/change.js 失败后数量控件持续加载；服务端数量应为 ${data.expected}`,
+                        selector: data.selector,
+                        tag: element.tagName.toLowerCase(),
+                        text: label.textContent,
+                        attributes: {
+                            expectedQuantity: String(data.expected),
+                            class: element.className || '',
+                            loading: String(element.classList.contains('is-loading')),
+                        },
+                        box: {
+                            x: Math.round(rect.left + scrollX),
+                            y: Math.round(rect.top + scrollY),
+                            width: Math.round(rect.width), height: Math.round(rect.height),
+                        },
+                    };
+                }""",
+                {"selector": selector, "expected": expected},
+            )
+        except Exception:
+            # 证据标注失败不能覆盖原始的用户可见状态断言。
+            pass
 
     def _record_quantity_mismatch_evidence(
         self, locator, *, selector: str, expected: int, actual: str

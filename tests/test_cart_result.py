@@ -1,9 +1,9 @@
 """购物车生成结果等待逻辑的离线回归测试。"""
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from python_playwright.pages.cart_page import CartPage
+from python_playwright.pages.cart_page import CartPage, CartSnapshot
 
 
 class _ImageLocator:
@@ -490,8 +490,34 @@ class CartGeneratedResultTests(unittest.TestCase):
     def test_drawer_snapshot_retries_during_component_redraw(self) -> None:
         """商品节点短暂被替换时只重读 DOM，不重复任何购物车操作。"""
         page = Mock()
+        stable_state = {
+            "ready": True,
+            "title": "JuJuBit Customized Figurine",
+            "variant": "Size: 6cm Best Fit",
+            "quantity": "1",
+            "subtotal": "$59.50",
+            "shipping": "Add $39.50 more to enjoy Free Shipping",
+            "imageUrl": "https://cdn.jujubit.ai/generated/result.png",
+        }
         page.evaluate.side_effect = [
             {"ready": False, "reason": "可见商品数量为 0"},
+            stable_state,
+            stable_state.copy(),
+        ]
+        cart = self._cart(page)
+        cart.assert_drawer_cart = Mock()
+
+        snapshot = cart.drawer_snapshot(expected_quantity=1)
+
+        self.assertEqual(snapshot.quantity, 1)
+        self.assertEqual(page.evaluate.call_count, 3)
+        self.assertEqual(page.wait_for_timeout.call_count, 2)
+        cart.assert_drawer_cart.assert_called_once_with(1)
+
+    def test_drawer_snapshot_waits_for_target_quantity_and_stable_summary(self) -> None:
+        """数量先更新而金额仍为旧值时，必须等到目标汇总连续稳定。"""
+        page = Mock()
+        page.evaluate.side_effect = [
             {
                 "ready": True,
                 "title": "JuJuBit Customized Figurine",
@@ -501,16 +527,80 @@ class CartGeneratedResultTests(unittest.TestCase):
                 "shipping": "Add $39.50 more to enjoy Free Shipping",
                 "imageUrl": "https://cdn.jujubit.ai/generated/result.png",
             },
+            {
+                "ready": True,
+                "title": "JuJuBit Customized Figurine",
+                "variant": "Size: 6cm Best Fit",
+                "quantity": "2",
+                "subtotal": "$59.50",
+                "shipping": "Add $39.50 more to enjoy Free Shipping",
+                "imageUrl": "https://cdn.jujubit.ai/generated/result.png",
+            },
+            {
+                "ready": True,
+                "title": "JuJuBit Customized Figurine",
+                "variant": "Size: 6cm Best Fit",
+                "quantity": "2",
+                "subtotal": "$119.00",
+                "shipping": "You've qualified for free standard shipping",
+                "imageUrl": "https://cdn.jujubit.ai/generated/result.png",
+            },
+            {
+                "ready": True,
+                "title": "JuJuBit Customized Figurine",
+                "variant": "Size: 6cm Best Fit",
+                "quantity": "2",
+                "subtotal": "$119.00",
+                "shipping": "You've qualified for free standard shipping",
+                "imageUrl": "https://cdn.jujubit.ai/generated/result.png",
+            },
         ]
         cart = self._cart(page)
         cart.assert_drawer_cart = Mock()
 
-        snapshot = cart.drawer_snapshot()
+        snapshot = cart.drawer_snapshot(expected_quantity=2)
 
-        self.assertEqual(snapshot.quantity, 1)
-        self.assertEqual(page.evaluate.call_count, 2)
-        page.wait_for_timeout.assert_called_once_with(100)
-        cart.assert_drawer_cart.assert_called_once_with(1)
+        self.assertEqual(snapshot.quantity, 2)
+        self.assertEqual(snapshot.subtotal, "$119.00")
+        self.assertEqual(
+            snapshot.shipping, "You've qualified for free standard shipping"
+        )
+        self.assertEqual(page.evaluate.call_count, 4)
+        self.assertEqual(page.wait_for_timeout.call_count, 3)
+
+    def test_failed_quantity_change_reports_stuck_loading_control(self) -> None:
+        """500 后加载圈未消失时，报告应说明用户不可继续操作而非虚构数量。"""
+        page = Mock()
+        drawer = Mock()
+        quantity_control = Mock()
+        page.locator.return_value = drawer
+        drawer.locator.return_value = quantity_control
+        cart = self._cart(page)
+        before = CartSnapshot(
+            title="JuJuBit Customized Figurine",
+            variant="Size: 6cm Best Fit",
+            quantity=1,
+            subtotal="$59.50",
+            shipping="Add $39.50 more to enjoy Free Shipping",
+            image_url="https://cdn.jujubit.ai/generated/result.png",
+        )
+
+        with patch("python_playwright.pages.cart_page.expect") as expect_mock:
+            expect_mock.return_value.not_to_have_class.side_effect = AssertionError(
+                "模拟加载超时"
+            )
+            with self.assertRaisesRegex(
+                AssertionError,
+                "数量控件持续加载且未恢复操作",
+            ):
+                cart.assert_failed_quantity_change_recovered(
+                    before,
+                    expected_cart_quantity=1,
+                )
+
+        quantity_control.evaluate.assert_called_once()
+        evidence_script = quantity_control.evaluate.call_args.args[0]
+        self.assertIn("数量控件持续加载", evidence_script)
 
 
 if __name__ == "__main__":

@@ -81,7 +81,7 @@ def test_ci_smoke_generate_add_and_checkout(page, request, test_platform):
 
         cart.add_current_model_to_cart()
         cart.assert_drawer_cart(quantity=1)
-        drawer_snapshot = cart.drawer_snapshot()
+        drawer_snapshot = cart.drawer_snapshot(expected_quantity=1)
         cart.close_drawer()
         cart.open_full_cart_from_header(expected_quantity=1)
         cart.assert_full_cart_page(quantity=1)
@@ -132,7 +132,7 @@ def test_cart_tc04_drawer_checkout_opens_checkout(page, request, test_platform):
     """CART-04：半屏购物车可直接进入 Checkout。"""
     with _isolated_cart(page, request) as cart:
         _add_existing_gallery_model(cart)
-        snapshot = cart.drawer_snapshot()
+        snapshot = cart.drawer_snapshot(expected_quantity=1)
         cart.checkout_from_drawer()
         cart.assert_checkout_summary(snapshot)
 
@@ -142,7 +142,7 @@ def test_cart_tc05_header_opens_full_cart(page, request, test_platform):
     """CART-05：Gallery Header Cart 可打开数据一致的全屏购物车。"""
     with _isolated_cart(page, request) as cart:
         _add_existing_gallery_model(cart)
-        drawer_snapshot = cart.drawer_snapshot()
+        drawer_snapshot = cart.drawer_snapshot(expected_quantity=1)
         cart.close_drawer()
         cart.open_full_cart_from_header(expected_quantity=1)
         cart.assert_full_cart_page(quantity=1)
@@ -183,7 +183,7 @@ def test_cart_tc08_drawer_and_full_cart_content(page, request, test_platform):
         cart.assert_drawer_cart(quantity=1)
         cart.assert_drawer_layout(test_platform)
         cart.assert_drawer_discount_fields()
-        drawer_snapshot = cart.drawer_snapshot()
+        drawer_snapshot = cart.drawer_snapshot(expected_quantity=1)
         cart.close_drawer()
         cart.open_full_cart_from_header(expected_quantity=1)
         cart.assert_full_cart_content(quantity=1)
@@ -205,18 +205,22 @@ def test_cart_tc10_quantity_buttons_update_totals(page, request, test_platform):
     """CART-10：数量加减会联动角标、金额、包邮提示和 Checkout 件数。"""
     with _isolated_cart(page, request) as cart:
         _add_existing_gallery_model(cart)
-        initial = cart.drawer_snapshot()
+        initial = cart.drawer_snapshot(expected_quantity=1)
         cart.assert_drawer_quantity_control(quantity=1)
 
         cart.click_drawer_quantity("increase", expected_quantity=2)
-        increased = cart.drawer_snapshot()
+        increased = cart.drawer_snapshot(expected_quantity=2)
         cart.assert_drawer_quantity_control(quantity=2)
+        assert increased.quantity == 2
         assert increased.subtotal != initial.subtotal, "数量加到 2 后 Subtotal 未更新"
+        assert increased.shipping, "数量加到 2 后包邮提示为空"
 
         cart.click_drawer_quantity("decrease", expected_quantity=1)
-        restored = cart.drawer_snapshot()
+        restored = cart.drawer_snapshot(expected_quantity=1)
         cart.assert_drawer_quantity_control(quantity=1)
+        assert restored.quantity == 1
         assert restored.subtotal == initial.subtotal, "数量减回 1 后 Subtotal 未恢复"
+        assert restored.shipping == initial.shipping, "数量减回 1 后包邮提示未恢复"
 
 
 @pytest.mark.cart_session
@@ -252,7 +256,7 @@ def test_cart_tc13_views_stay_consistent_and_full_cart_closes(
     with _isolated_cart(page, request) as cart:
         _, gallery_url = _add_existing_gallery_model(cart)
         cart.set_drawer_quantity(2)
-        drawer_snapshot = cart.drawer_snapshot()
+        drawer_snapshot = cart.drawer_snapshot(expected_quantity=2)
         cart.close_drawer()
         cart.open_full_cart_from_header(expected_quantity=2)
         cart.assert_full_cart_matches(drawer_snapshot)
@@ -267,7 +271,7 @@ def test_cart_tc14_checkout_summary_matches_cart(page, request, test_platform):
     with _isolated_cart(page, request) as cart:
         _add_existing_gallery_model(cart)
         cart.set_drawer_quantity(2)
-        snapshot = cart.drawer_snapshot()
+        snapshot = cart.drawer_snapshot(expected_quantity=2)
         cart.checkout_from_drawer()
         cart.assert_checkout_summary(snapshot)
 
@@ -292,10 +296,14 @@ def test_cart_tc15_failures_do_not_create_false_cart_state(
         cart.add_current_model_to_cart()
         before_change = cart.cart_json()
         assert before_change["item_count"] == 1
+        before_snapshot = cart.drawer_snapshot(expected_quantity=1)
         page.route("**/cart/change.js*", _fulfill_server_error)
         try:
-            with pytest.raises(AssertionError, match=r"修改购物车数量失败：HTTP 500"):
-                cart.set_drawer_quantity(2)
+            with pytest.raises(
+                AssertionError,
+                match=r"点击购物车数量按钮失败：HTTP 500",
+            ):
+                cart.click_drawer_quantity("increase", expected_quantity=2)
         finally:
             page.unroute("**/cart/change.js*", _fulfill_server_error)
 
@@ -304,6 +312,7 @@ def test_cart_tc15_failures_do_not_create_false_cart_state(
         assert [item["quantity"] for item in after_change["items"]] == [
             item["quantity"] for item in before_change["items"]
         ], "change 失败后服务端数量被错误修改"
-        cart.assert_page_integrity(
-            expected_cart_quantity=before_change["item_count"]
+        cart.assert_failed_quantity_change_recovered(
+            before_snapshot,
+            expected_cart_quantity=before_change["item_count"],
         )
