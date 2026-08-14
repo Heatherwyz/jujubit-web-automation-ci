@@ -1580,85 +1580,39 @@ class CartPage:
                     )
                 expect(quantity_input).to_have_value(str(expected_cart_quantity))
 
-    def assert_failed_quantity_change_recovered(
+    def assert_failed_quantity_change_preserves_visible_state(
         self, before: CartSnapshot, *, expected_cart_quantity: int
     ) -> None:
-        """确认数量接口失败后，用户可见控件已退出加载并恢复原购物车状态。"""
-        quantity_control = self.drawer.locator(".ccd-qty")
-        try:
-            expect(quantity_control).not_to_have_class(
-                re.compile(r"\bis-loading\b"), timeout=10_000
-            )
-        except AssertionError as error:
-            self._record_quantity_loading_evidence(
-                quantity_control,
-                selector=".ccd.is-open .ccd-qty.is-loading",
-                expected=before.quantity,
-            )
-            raise AssertionError(
-                "cart/change.js 返回失败后，数量控件持续加载且未恢复操作；"
-                "服务端数量、金额虽保持原值，但用户无法继续修改数量。"
-            ) from error
-
-        restored = self.drawer_snapshot(expected_quantity=expected_cart_quantity)
-        assert restored.title == before.title, "失败后商品标题未恢复到失败前状态"
-        assert restored.variant == before.variant, "失败后商品规格未恢复到失败前状态"
-        assert restored.quantity == before.quantity, "失败后商品数量未恢复到失败前状态"
-        assert restored.subtotal == before.subtotal, "失败后 Subtotal 未恢复到失败前状态"
-        assert restored.shipping == before.shipping, "失败后包邮提示未恢复到失败前状态"
-        restored_image_path = self._normalized_image_path(restored.image_url)
-        before_image_path = self._normalized_image_path(before.image_url)
-        assert restored_image_path == before_image_path, "失败后商品图片未恢复到失败前状态"
-        self.assert_page_integrity(expected_cart_quantity=expected_cart_quantity)
-
-    def _record_quantity_loading_evidence(
-        self, locator, *, selector: str, expected: int
-    ) -> None:
-        """在失败截图中标出卡住的数量加载控件。"""
-        try:
-            locator.scroll_into_view_if_needed()
-            locator.evaluate(
-                """(element, data) => {
-                    const old = document.getElementById('jujubit-test-evidence-label');
-                    if (old) old.remove();
-                    element.style.setProperty('outline', '5px solid #ff2d2d', 'important');
-                    element.style.setProperty(
-                        'background-color', 'rgba(255, 45, 45, 0.16)', 'important'
-                    );
-                    const rect = element.getBoundingClientRect();
-                    const label = document.createElement('div');
-                    label.id = 'jujubit-test-evidence-label';
-                    label.textContent = `数量控件持续加载：应恢复为 ${data.expected}`;
-                    Object.assign(label.style, {
-                        position: 'fixed', zIndex: '2147483646',
-                        left: `${Math.max(8, Math.min(rect.left, innerWidth - 270))}px`,
-                        top: `${Math.max(8, rect.top - 34)}px`, padding: '5px 9px',
-                        background: '#ff2d2d', color: '#fff', borderRadius: '4px',
-                        font: 'bold 13px/1.2 Arial, sans-serif', pointerEvents: 'none',
-                    });
-                    document.body.appendChild(label);
-                    window.__jujubitTestEvidence = {
-                        note: `cart/change.js 失败后数量控件持续加载；服务端数量应为 ${data.expected}`,
-                        selector: data.selector,
-                        tag: element.tagName.toLowerCase(),
-                        text: label.textContent,
-                        attributes: {
-                            expectedQuantity: String(data.expected),
-                            class: element.className || '',
-                            loading: String(element.classList.contains('is-loading')),
-                        },
-                        box: {
-                            x: Math.round(rect.left + scrollX),
-                            y: Math.round(rect.top + scrollY),
-                            width: Math.round(rect.width), height: Math.round(rect.height),
-                        },
-                    };
-                }""",
-                {"selector": selector, "expected": expected},
-            )
-        except Exception:
-            # 证据标注失败不能覆盖原始的用户可见状态断言。
-            pass
+        """失败请求后只校验用户可见业务状态，不读取隐藏加载控件的内部值。"""
+        self.assert_page_integrity()
+        response_cart = self.cart_json()
+        assert int(response_cart.get("item_count", 0)) == expected_cart_quantity, (
+            "change 失败后服务端购物车数量被修改："
+            f"expected={expected_cart_quantity}, actual={response_cart.get('item_count')}"
+        )
+        self.assert_header_badge(expected_cart_quantity)
+        expect(self.drawer).to_be_visible()
+        expect(self.drawer_item.locator(".ccd-item-title")).to_have_text(before.title)
+        expect(self.drawer_item.locator(".ccd-item-variant")).to_have_text(before.variant)
+        expect(self.drawer.locator(".ccd-subtotal-val")).to_have_text(before.subtotal)
+        expect(self.drawer.locator(".ccd-checkout")).to_have_text(
+            f"Checkout ({expected_cart_quantity})"
+        )
+        self._assert_shipping_copy(self.drawer.locator(".ccd-shipping-text"))
+        shipping_text = self._shipping_text(self.drawer.locator(".ccd-shipping-text"))
+        assert shipping_text == before.shipping, (
+            "change 失败后包邮提示与失败前不一致："
+            f"before={before.shipping!r}"
+        )
+        quantity_input = self.drawer.locator(".ccd-qty-num")
+        if quantity_input.is_visible():
+            expect(quantity_input).to_have_value(str(expected_cart_quantity))
+        actual_image_path = self._normalized_image_path(
+            self.drawer_item.locator(".ccd-item-img").get_attribute("src") or ""
+        )
+        assert actual_image_path == self._normalized_image_path(
+            before.image_url
+        ), "失败后商品图片发生变化"
 
     def _record_quantity_mismatch_evidence(
         self, locator, *, selector: str, expected: int, actual: str

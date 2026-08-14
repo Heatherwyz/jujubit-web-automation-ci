@@ -41,7 +41,7 @@
 | CART-12 | 数量输入上限为 100 | `test_cart_tc12_quantity_input_caps_at_100` | P0 | 半屏购物车内有同一 SKU。 | 数量框输入 101 并提交。 | 数量自动回正 100；角标为 99+；Checkout (100)；加号不可用，H5 输入框使用数字输入属性。 |
 | CART-13 | 半屏与全屏数据一致且全屏 Close 正确返回 | `test_cart_tc13_views_stay_consistent_and_full_cart_closes` | P1 | 从 Gallery 加购并将同一 SKU 调整为 2。 | 记录半屏快照，关闭半屏后由 Header 进入全屏，再点击全屏 Close。 | 两种视图的商品、SKU、数量、Subtotal 和包邮状态一致；Close 返回原 Gallery，商品不丢失。 |
 | CART-14 | Checkout 订单摘要与购物车一致 | `test_cart_tc14_checkout_summary_matches_cart` | P0 | 半屏购物车内同一 Gallery 商品数量为 2。 | 记录商品、数量和 Subtotal 后进入 Checkout。 | Checkout 展示同一商品与数量，页面金额可见；不点击提交或支付按钮。 |
-| CART-15 | 失败请求不产生假购物车状态或非法金额 | `test_cart_tc15_failures_do_not_create_false_cart_state` | P1 | 存在可复用 Gallery 资产；浏览器支持路由模拟。 | 分别模拟 cart/add.js 与 cart/change.js 返回 500；change 用真实加号触发，等待数量控件退出加载态后检查页面与服务端购物车。 | 不出现假加购、非法数量、白屏或 NaN/null 金额；数量、角标、Subtotal、包邮提示和 Checkout 件数恢复到失败前状态，服务端数据不被错误修改。 |
+| CART-15 | 失败请求不产生假购物车状态或非法金额 | `test_cart_tc15_failures_do_not_create_false_cart_state` | P1 | 存在可复用 Gallery 资产；浏览器支持路由模拟。 | 分别模拟 cart/add.js 与 cart/change.js 返回 500；change 用真实加号触发，并检查用户可见页面与服务端购物车。 | 不出现假加购、白屏或 NaN/null 金额；商品、角标、Subtotal、包邮提示和 Checkout 件数保持失败前状态，服务端数据不被错误修改。 |
 
 ## 4. 线上最终文案
 

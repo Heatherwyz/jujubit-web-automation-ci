@@ -312,7 +312,7 @@ def test_cart_tc15_failures_do_not_create_false_cart_state(
         assert [item["quantity"] for item in after_change["items"]] == [
             item["quantity"] for item in before_change["items"]
         ], "change 失败后服务端数量被错误修改"
-        cart.assert_failed_quantity_change_recovered(
+        cart.assert_failed_quantity_change_preserves_visible_state(
             before_snapshot,
             expected_cart_quantity=before_change["item_count"],
         )

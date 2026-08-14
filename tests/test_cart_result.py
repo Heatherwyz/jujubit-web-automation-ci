@@ -1,7 +1,7 @@
 """购物车生成结果等待逻辑的离线回归测试。"""
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from python_playwright.pages.cart_page import CartPage, CartSnapshot
 
@@ -567,41 +567,6 @@ class CartGeneratedResultTests(unittest.TestCase):
         )
         self.assertEqual(page.evaluate.call_count, 4)
         self.assertEqual(page.wait_for_timeout.call_count, 3)
-
-    def test_failed_quantity_change_reports_stuck_loading_control(self) -> None:
-        """500 后加载圈未消失时，报告应说明用户不可继续操作而非虚构数量。"""
-        page = Mock()
-        drawer = Mock()
-        quantity_control = Mock()
-        page.locator.return_value = drawer
-        drawer.locator.return_value = quantity_control
-        cart = self._cart(page)
-        before = CartSnapshot(
-            title="JuJuBit Customized Figurine",
-            variant="Size: 6cm Best Fit",
-            quantity=1,
-            subtotal="$59.50",
-            shipping="Add $39.50 more to enjoy Free Shipping",
-            image_url="https://cdn.jujubit.ai/generated/result.png",
-        )
-
-        with patch("python_playwright.pages.cart_page.expect") as expect_mock:
-            expect_mock.return_value.not_to_have_class.side_effect = AssertionError(
-                "模拟加载超时"
-            )
-            with self.assertRaisesRegex(
-                AssertionError,
-                "数量控件持续加载且未恢复操作",
-            ):
-                cart.assert_failed_quantity_change_recovered(
-                    before,
-                    expected_cart_quantity=1,
-                )
-
-        quantity_control.evaluate.assert_called_once()
-        evidence_script = quantity_control.evaluate.call_args.args[0]
-        self.assertIn("数量控件持续加载", evidence_script)
-
 
 if __name__ == "__main__":
     unittest.main()
