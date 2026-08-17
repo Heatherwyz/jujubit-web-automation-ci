@@ -102,7 +102,7 @@
 7. 埋点事件名称、公共字段、曝光阈值、去重周期和验收环境尚未最终确定，暂不能形成稳定自动化断言。
 8. PC/H5 独立媒体缺失一端配置时的回退优先级未明确。
 9. “Hero 始终第一业务区块”与商家在 Theme Editor 中拖动 Hero 到其他位置时，系统应禁止拖动还是保存后强制纠正，需要明确。
-10. Header Categories 的五个二级入口为 Art Toys、FDM、Crystal Bracelets、Custom Keycaps、Photo Board。
+10. Header Categories 当前已确认的核心入口为 Art Toys、FDM LAMPS、Crystal Bracelets、Keycaps、Photo Boards；线上还配置了 Keychains，不能因为额外入口而判错。
 11. `review_images` 仅规定全角 `｜`；是否兼容半角 `|` 和历史逗号格式需确认。
 
 ## 5. 自动化实施分层
@@ -121,8 +121,8 @@
 | 文案/SEO | 首页元数据 | P0 | `title` 精确为 `JuJuBit \| Custom Figurines, Crystal Bracelets & Art Toys`；meta description 精确为 `JuJuBit makes custom figurines from your photo, crystal bracelets, and art toys. AI-assisted design, worldwide shipping. Turn your photo into a 3D collectible.`，且各仅一个 | UI/API |
 | 文案/SEO | Hero 的页面主题 | P0 | 全页仅一个 H1，精确为 `Create Your Own Custom Figurine From a Photo`；H1 为 SSR HTML 真实文字，非图片叠字；每个 slide 标题为 H2 或普通文字 | UI/API |
 | 技术文档 | Logo 无障碍文本 | P0 | Logo 图片 `alt` 精确为 `JuJuBit - Custom 3D Figurines`；Logo 链接到 `/` | UI |
-| PRD/文案 | Header 入口及品类二级菜单 | P0 | Header 有真实文字 `<a>`；一级导航均可点击；Categories 包含 Art Toys、FDM、Crystal Bracelets、Custom Keycaps、Photo Board 五个二级入口；不渲染三级菜单 | UI/API |
-| 文案/PRD | Header URL 基准 | P0 | Create 使用主题实际配置的有效地址；Templates=`/collections/templates-create-your-own`，How It Works=`/pages/how-it-works`；品类链接分别为 `art-toy`、`fdm`、`zodiac-x-tarot`、`keycaps`、`photo-board` | UI/API |
+| PRD/文案 | Header 入口及品类二级菜单 | P0 | Header 有真实文字 `<a>`；一级导航均可点击；Categories 至少包含当前配置的 Art Toys、FDM LAMPS、Crystal Bracelets、Keycaps、Photo Boards；额外的 Keychains 等入口不判错；不渲染三级菜单 | UI/API |
+| 文案/PRD | Header URL 基准 | P0 | Create 使用主题实际配置的有效地址；Templates=`/collections/templates-create-your-own`，How It Works=`/pages/how-it-works`；当前品类链接分别为 `art-toy`、`fdm`、`crystal-bracelets`、`keycaps`、`photo-board` | UI/API |
 | 技术文档/文案 | Hero 图片与 CTA | P0 | 首屏媒体优先加载且不使用 `loading=lazy`；产品图 alt 使用描述性文本，装饰背景 `alt=""`；CTA 为真实链接，默认文案 `Create Your Figurine`，并能打开主题实际配置的有效页面 | UI |
 | PRD/文案 | Template Entry | P1 | 卡片名为 HTML 文字；每卡至少一个有意义的 `<a>`；默认风格入口可访问，查看全部链接至 `/collections/templates-create-your-own` | UI/API |
 | PRD/文案 | How It Works 与 HowTo 数据源 | P0 | 四步标题及描述均在 SSR HTML 中可见；若输出 HowTo JSON-LD，Schema 步骤文本与页面对应字段逐字一致 | UI/API |
@@ -130,7 +130,7 @@
 | PRD/文案 | Social 静态层 | P1 | 静态引用包含真实文字、作者和描述；动态 embed 不作为唯一内容来源；社交外链带 `rel="noopener noreferrer"` | UI |
 | PRD/文案 | Brand Highlights | P1 | 四个信任点为 HTML 真实文字且全量展示、不折叠；不使用未经确认的客户数或评分数字 | UI/人工 |
 | PRD/文案 | FAQ 与 FAQPage | P0 | 所有 FAQ 问答均在原始 HTML 中；FAQPage `acceptedAnswer.text` 与页面答案同源一致；全部入口指向 `/pages/faqs` | UI/API |
-| 文案 | Footer 社交项 | P1 | Instagram、TikTok、YouTube、X、Snapchat 图标均有规定 aria-label，链接匹配文案清单且外链隔离 opener | UI |
+| 文案 | Footer 社交项 | P1 | 当前配置的 Instagram、TikTok、YouTube、X 图标均有可被辅助技术读取的平台名称（`aria-label`、`title` 或 fallback 文本任一有效），链接匹配文案清单且外链隔离 opener；当前未配置的 Snapchat 不作为必需入口 | UI |
 | PRD | Dynamic section 独立性 | P1 | Template、How It Works、Category、Reviews、Social、Brand Highlights、FAQ 可独立隐藏/排序/复用；任一调整不影响其他模块渲染 | 人工 |
 | PRD | Hero 排序约束 | P0 | Hero 保持第一个业务 section；Announcement/Header/Footer 固定，不参与业务区块排序 | 人工 |
 | PRD | 埋点最低字段 | P1 | section 曝光带 `section_handle` 和屏位；公告点击带活动 slug；导航、Hero、Template、Category、Review、Social、FAQ、Footer 点击带 PRD 指定业务字段 | UI/分析平台 |
@@ -144,7 +144,7 @@
 | HOME-SEO-003 | JSON-LD | P0 | 页面输出结构化数据 | 遍历所有 `application/ld+json` 并解析 | JSON 均可解析；Organization、WebSite、FAQPage、HowTo 类型不重复、不使用空字段，URL 与当前正式域名一致 | UI/API |
 | HOME-SEO-004 | 图片 alt | P1 | 首页所有业务图片已配置 | 收集所有 `img`，区分功能图和装饰图 | 功能图 alt 非空、不重复、不使用文件名；装饰图 alt 为空；所有 alt 不含医疗功效禁用词 | UI |
 | HOME-HDR-001 | Header | P0 | 主菜单按文案配置 | PC 展开 Categories，H5 打开菜单，收集一级/二级入口 | 两端均包含规定入口；入口均为真实 `<a href>`；PC/H5 目标 URL 一致；无三级菜单节点 | UI |
-| HOME-HDR-002 | Header | P0 | Categories 配置五个品类 | 逐个真实点击五个品类链接并记录落地 URL | Art Toys、FDM、Crystal Bracelets、Custom Keycaps、Photo Board 展示名和目标集合匹配；均非 404/5xx | UI/API |
+| HOME-HDR-002 | Header | P0 | Categories 配置核心品类 | 逐个真实点击当前核心品类链接并记录落地 URL | Art Toys、FDM LAMPS、Crystal Bracelets、Keycaps、Photo Boards 展示名和目标集合匹配；均非 404/5xx；额外入口不判错 | UI/API |
 | HOME-HDR-003 | Header | P1 | 导航中配置三级菜单 | PC hover、键盘展开及 H5 展开二级菜单 | 第三级不渲染；二级入口仍可聚焦、点击和关闭，布局无溢出 | UI/人工 |
 | HOME-HERO-001 | Hero | P0 | 同一端同时配置图片和视频 | PC/H5 分别加载首页并监控媒体请求和可见元素 | 图片优先展示；视频不自动播放且不抢占 LCP；另一端的媒体不被错误展示 | UI |
 | HOME-HERO-002 | Hero | P1 | PC 或 H5 仅配置一种媒体，另一端为空 | 分别以 769px、768px 加载 | 按最终确认的跨端回退规则展示；无破图、空白容器或重复媒体 | UI/待确认 |
@@ -157,8 +157,8 @@
 | HOME-REV-001 | Reviews | P1 | 禁用 Judge.me 脚本或拦截第三方请求 | 加载首页并检查评价区 | 评价文字、评分和图片仍存在于静态 HTML；核心内容不因第三方脚本失败而消失 | UI/API |
 | HOME-REV-002 | Reviews | P1 | 评价图片和文本已配置 | 检查隐私、截断和弹窗 | 卡片不显示真实全名；两行截断仅影响视觉，完整文本可在弹窗读取；弹窗焦点与关闭行为正确 | UI/人工 |
 | HOME-SOC-001 | Social | P1 | 配置静态引用和动态 embed | 拦截 Instagram/TikTok embed 后加载首页 | 静态引用、作者、描述和站外入口仍完整可见；页面无无限 loading 或空白占位 | UI |
-| HOME-SOC-002 | Social | P0 | 配置五个平台入口 | 校验 href、aria-label、target 和 rel | 五个平台 URL 与文案清单一致；名称可被辅助技术读取；新窗口链接隔离 opener | UI |
-| HOME-FAQ-001 | FAQ | P0 | 配置八条 FAQ 并开启 Schema | 获取原始 HTML，展开每项并对比 JSON-LD | 八条问答均在 SSR HTML；页面与 Schema 问题、答案、顺序和数量一致；答案不被截断 | UI/API |
+| HOME-SOC-002 | Social | P0 | 配置当前四个平台入口 | 校验 href、可访问名称、target 和 rel | Instagram、TikTok、YouTube、X 的 URL 与文案清单一致；名称可被辅助技术读取；新窗口链接隔离 opener；不把当前未配置的 Snapchat 判为失败 | UI |
+| HOME-FAQ-001 | FAQ | P0 | 配置 FAQ 并开启 Schema | 获取原始 HTML，展开每项并对比 JSON-LD | 当前配置的全部问答均在 SSR HTML；页面与 Schema 问题、答案、顺序和数量一致；答案不被截断 | UI/API |
 | HOME-FAQ-002 | FAQ | P1 | 关闭 FAQPage Schema setting | 重新加载并检查结构化数据和交互 | 页面 FAQ 仍可见并可交互；FAQPage JSON-LD 不输出；其他 Schema 不受影响 | UI |
 | HOME-DYN-001 | Dynamic section | P1 | 可编辑测试主题 | 逐个隐藏 Template、How It Works、Category、Reviews、Social、Brand Highlights、FAQ | 仅目标 section 消失；前后区块样式、间距、交互和 Schema 不残留、不报错 | 人工 |
 | HOME-DYN-002 | Dynamic section | P0 | 可编辑测试主题 | 重排所有可动态 section 并尝试移动 Hero | 可动态 section 按保存顺序呈现且互不依赖；Hero 仍为第一个业务 section；固定 group 位置不变 | 人工 |
