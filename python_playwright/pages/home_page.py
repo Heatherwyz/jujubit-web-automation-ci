@@ -203,6 +203,8 @@ class HomePage:
                         '.newsletter-popup--original',
                         '.newsletter-popup-v2__overlay',
                         '.newsletter-popup__overlay',
+                        '.newsletter-popup-v2__close',
+                        '.newsletter-popup--original .modal__close',
                         '.newsletter-popup-v2 button[aria-label*="Close"]',
                         '.newsletter-popup--original button[aria-label*="Close"]',
                         '.newsletter-popup-v2 .modal__close',
@@ -212,14 +214,16 @@ class HomePage:
                     const isRendered = element => {
                         if (typeof element.checkVisibility === 'function'
                             && !element.checkVisibility({
-                                checkOpacity: true,
+                                // 透明但 pointer-events 仍开启的退出动画仍会拦截点击，
+                                // 不能把它误判成已关闭。
+                                checkOpacity: false,
                                 checkVisibilityCSS: true,
                             })) return false;
                         const style = window.getComputedStyle(element);
                         const rect = element.getBoundingClientRect();
                         return style.display !== 'none'
                             && style.visibility !== 'hidden'
-                            && Number(style.opacity || 1) > 0
+                            && style.pointerEvents !== 'none'
                             && rect.width > 1
                             && rect.height > 1
                             && rect.right > 0
@@ -258,9 +262,25 @@ class HomePage:
         return self.popup_root.locator(
             "button[aria-label='Close']:visible, "
             "button[aria-label*='Close']:visible, "
+            ".newsletter-popup-v2__close:visible, "
+            ".newsletter-popup__close:visible, "
             ".modal__close:visible, "
             "[data-popup-close]:visible"
         )
+
+    def _wait_for_popup_clear(self, timeout_ms: int = 3_000) -> bool:
+        """等待关闭动画结束，并确认弹窗相关元素不再接收指针事件。"""
+        deadline = time.monotonic() + max(0, timeout_ms) / 1_000
+        while True:
+            if not self._popup_blocks_interaction():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            self.page.wait_for_timeout(100)
+
+    def popup_is_blocking(self) -> bool:
+        """返回优惠弹窗或透明遮罩是否仍会拦截页面操作。"""
+        return self._popup_blocks_interaction()
 
     def close_welcome_popup(self, *, observe_timeout: Optional[int] = None) -> bool:
         """关闭出现或遮挡点击的优惠弹窗，返回本次是否实际关闭。"""
@@ -298,8 +318,7 @@ class HomePage:
                     # 被另一层弹窗覆盖的关闭按钮无法点击，继续尝试真正位于顶层的控件。
                     last_error = error
                     continue
-                self.page.wait_for_timeout(250)
-                if not self._popup_blocks_interaction():
+                if self._wait_for_popup_clear():
                     self._popup_checked_url = current_url
                     return True
             if attempt == 0:

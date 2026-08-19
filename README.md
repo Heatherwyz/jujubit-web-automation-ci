@@ -71,8 +71,42 @@ artifacts/runs/<时间戳>/jujubit-report-<时间戳>.html
 
 - `python_playwright/`：页面对象、fixture 和测试用例。
 - `docs/`：需求测试用例设计。
+- `recorded/`：真实浏览器 Codegen 录制资产；只用于页面变更评审和定位器微调，不直接作为 CI 回归脚本。
+- `scripts/record_ui_flow.py`：统一启动 PC/H5 真实录制；`scripts/validate_recording.py`：离线检查录制语法、定位器风险和敏感输入。
 - `run_all.py`：一键运行和按时间戳归档入口。
 - `artifacts/runs/`：历史报告及关联失败视频。
+
+## 页面变化时通过真实录制微调
+
+当首页或其他页面的 DOM、文案或交互发生变化时，不需要另起一套测试框架。先用真实
+Playwright Codegen 录制当前用户路径，再把经评审的最小定位器/等待变化回填到现有 Page
+Object，最后仍由 pytest 和 `run_all.py` 执行回归、生成报告。
+
+例如录制首页 PC 流程：
+
+```bash
+.venv/bin/python scripts/record_ui_flow.py \
+  --name homepage-change \
+  --url https://jujubit.ai/ \
+  --platform pc
+```
+
+录制完成后检查临时目录：
+
+```bash
+.venv/bin/python scripts/validate_recording.py recorded/inbox/<录制目录>
+```
+
+原始录制不会被 pytest 收集，也不应直接复制进测试目录。它只用于确认真实动作和候选定位器；
+稳定修改应进入 `python_playwright/pages/`，业务断言仍保留在
+`python_playwright/tests/`。PC/H5 受影响用例通过后，再运行：
+
+```bash
+.venv/bin/python run_all.py --platform all
+```
+
+详细的操作、评审清单、脱敏规则和接受录制的提交标准见
+[录制回归方案](docs/JuJuBit-录制回归方案.md) 与 [录制资产说明](recorded/README.md)。
 
 ## GitHub Actions 定时运行
 

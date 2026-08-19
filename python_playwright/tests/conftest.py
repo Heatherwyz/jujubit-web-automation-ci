@@ -204,6 +204,12 @@ def page(browser, cart_contexts, request, test_platform):
             options.update(
                 {"device_scale_factor": 3, "is_mobile": True, "has_touch": True}
             )
+        if request.config.getoption("--pw-record-video"):
+            # 首页用例也必须把录像写入本次运行的临时目录；否则失败报告只有截图，
+            # 即使命令行传入 --pw-record-video 也不会生成可点击的错误视频。
+            raw_video_dir = artifact_dir / "failure-videos" / "raw"
+            raw_video_dir.mkdir(parents=True, exist_ok=True)
+            options["record_video_dir"] = str(raw_video_dir)
         context = browser.new_context(**options)
     current_page = context.new_page()
     if is_cart_session:

@@ -32,6 +32,7 @@ def test_tc03_welcome_popup_can_close(home, page, test_platform):
     # 弹窗可能延迟出现；关闭后不能遮挡首页主内容。
     home.close_welcome_popup()
     expect(home.welcome_popup).to_be_hidden()
+    assert not home.popup_is_blocking(), "优惠弹窗关闭后仍在遮挡页面操作"
     expect(page.locator("main")).to_be_visible()
 
 
@@ -83,7 +84,20 @@ def test_tc09_hero_image_is_visible(home, page, test_platform):
     home.close_welcome_popup()
     banner = page.get_by_role("region", name="Banner")
     expect(banner).to_be_visible()
-    expect(banner.locator("img:visible")).to_have_count(1)
+    # 轮播会把非激活 slide 保留在 DOM 中，且 opacity: 0 在 Playwright 中仍可能
+    # 被 ``:visible`` 识别。这里只验收当前激活 slide，避免把正常轮播误报成两张图。
+    active_slide = banner.locator("[data-banner-slide].is-active")
+    expect(active_slide).to_have_count(1)
+    # 当前端只应显示 PC 或 H5 对应的一张媒体；这也能发现响应式样式错误地同时
+    # 展示两张 Hero 图片的情况。
+    platform_media = "mb" if test_platform == "h5" else "pc"
+    active_image = active_slide.locator(
+        f".jjb-banner__media-wrap--{platform_media}:visible > img.jjb-banner__media"
+    )
+    expect(active_image).to_have_count(1)
+    assert active_image.evaluate(
+        "element => element.complete && element.naturalWidth > 0"
+    ), "当前 Hero 轮播项的图片未成功加载"
 
 
 def test_tc10_hero_create_link_is_correct(home, page, test_platform):

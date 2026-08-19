@@ -28,6 +28,11 @@ def _parse_args():
         help="遇到 429/人机验证时显示浏览器，等待人工确认后继续。",
     )
     parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="使用可见浏览器执行，适合本地调试和现场演示。",
+    )
+    parser.add_argument(
         "--include-cart",
         action="store_true",
         help="同时执行会创建生成任务并修改购物车的端到端用例。",
@@ -111,9 +116,11 @@ def main() -> int:
         str(RUN_DIR / "results.xml"),
         "--tb=no",
     ]
+    if args.headed or args.manual_verification:
+        command.append("--headed")
     if args.manual_verification:
         # 人机验证必须由使用者在可见浏览器中完成，脚本只负责等待并继续执行。
-        command.extend(["--headed", "--pw-manual-verification"])
+        command.append("--pw-manual-verification")
     if args.cart_smoke:
         # 综合 Smoke 只跑 1 条单上下文主链路，避免多个登录上下文连续撞 WAF。
         command.extend(["-m", "not cart_session or cart_smoke"])

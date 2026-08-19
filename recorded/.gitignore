@@ -1,0 +1,10 @@
+# 临时 Codegen 录制不直接进入版本库；评审后移动到 accepted/。
+inbox/*
+!inbox/.gitkeep
+
+# 这些文件可能包含 Cookie、请求头或页面个人数据。
+**/*.har
+**/storage*.json
+**/auth*.json
+**/*.webm
+**/*.png

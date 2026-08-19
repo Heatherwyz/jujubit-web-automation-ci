@@ -28,9 +28,9 @@ EXPECTED_NAVIGATION_LINKS = {
     "How It Works": "/pages/how-it-works",
 }
 EXPECTED_HEADER_CATEGORY_LINKS = {
-    "Art Toys": "/collections/art-toy",
-    # 线上主题当前使用的展示文案与旧版 PRD 草稿略有不同；这里按
-    # 当前真实导航配置验收，目标页仍是同一业务品类。
+    # 线上主题已将该品类的导航展示文案更新为 FIGURINES；业务集合地址
+    # 仍然是 art-toy。按当前可见文案验收，避免把旧名称误报为缺少链接。
+    "FIGURINES": "/collections/art-toy",
     "FDM LAMPS": "/collections/fdm",
     "Crystal Bracelets": "/collections/crystal-bracelets",
     "Keycaps": "/collections/keycaps",
@@ -205,6 +205,26 @@ def _assert_destination_is_usable(page, response, href):
     )
 
 
+def _skip_if_site_verification_blocks_page(page, href):
+    """识别 CI 出口触发的人机验证，避免把环境拦截误报为业务白屏。"""
+    title = page.title().strip().lower()
+    body = page.locator("body").inner_text(timeout=5_000).strip().lower()
+    title_markers = ("just a moment", "attention required", "security verification")
+    body_markers = (
+        "complete the human verification process",
+        "verify you are human",
+        "performing security verification",
+        "checking if the site connection is secure",
+    )
+    if any(marker in title for marker in title_markers) or any(
+        marker in body for marker in body_markers
+    ):
+        pytest.skip(
+            "站点人机验证拦截了 GitHub Runner，本条链接未完成校验，"
+            f"不代表业务页面失败：{href}"
+        )
+
+
 def _click_and_check_destination(home, page, link):
     """关闭弹窗后点击主题当前配置的链接，并检查真实落地页。"""
     home.close_welcome_popup()
@@ -220,6 +240,9 @@ def _click_and_check_destination(home, page, link):
         timeout=30_000,
     )
     page.wait_for_load_state("domcontentloaded")
+    # GitHub Runner 偶发进入独立的人机验证页，该页面本身没有业务 <main>。
+    # 先识别访问环境拦截，再执行页面结构断言，避免被误记为白屏失败。
+    _skip_if_site_verification_blocks_page(page, href)
     # 落地页若再次出现优惠弹窗，也先关闭再检查页面内容。
     home.close_welcome_popup()
     _assert_destination_is_usable(page, None, href)
@@ -265,8 +288,14 @@ def test_logo_accessibility_text(home, test_platform):
 def test_hero_lcp_media_is_eager(home, page, test_platform):
     """REQ-03：首屏 Hero 媒体不懒加载，并预留尺寸以降低布局偏移。"""
     home.close_welcome_popup()
-    hero_image = page.get_by_role("region", name="Banner").locator("img:visible").first
-    expect(hero_image).to_be_visible()
+    banner = page.get_by_role("region", name="Banner")
+    first_slide = banner.locator("[data-banner-slide]").first
+    platform_media = "mb" if test_platform == "h5" else "pc"
+    # 首屏性能应检查初始 slide 在当前端实际使用的图片，不受自动轮播切换影响。
+    hero_image = first_slide.locator(
+        f".jjb-banner__media-wrap--{platform_media} img"
+    ).first
+    expect(hero_image).to_be_attached()
     loading = hero_image.get_attribute("loading")
     if loading == "lazy":
         home.mark_failure_evidence(
