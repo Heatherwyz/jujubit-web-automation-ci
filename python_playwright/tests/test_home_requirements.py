@@ -225,6 +225,57 @@ def _skip_if_site_verification_blocks_page(page, href):
         )
 
 
+def _is_trusted_shopify_account_host(hostname):
+    """判断登录跳转最终是否仍在 Shopify 托管账户的受信域名内。"""
+    normalized = (hostname or "").lower().rstrip(".")
+    return normalized == "shopify.com" or normalized.endswith(".shopify.com")
+
+
+def _assert_customer_account_login_page(page, response, href):
+    """验收 Shopify Customer Account 登录页，而不是误用 API 正文长度判白屏。
+
+    Customer Account 会从店铺的 ``/account`` 或 ``/customer_authentication/``
+    重定向到 Shopify OAuth。该链路的 API 请求可能返回 406，但真实浏览器中的
+    登录页是正常的，因此这里以最终渲染的页面和登录控件作为验收依据。
+    """
+    _skip_if_site_verification_blocks_page(page, href)
+    if response is not None:
+        # Shopify Customer Account 的独立频控不代表首页登录入口失效；与首页
+        # 及普通链接扫描的 429 口径一致，明确标记为本轮未完成而非业务失败。
+        if response.status == 429:
+            pytest.skip(
+                "Shopify Customer Account 登录服务返回 HTTP 429，本条登录入口"
+                f"校验未完成，不代表页面功能失败：{href}"
+            )
+        assert response.status < 400, (
+            f"Customer Account 登录跳转返回 HTTP {response.status}：{href}"
+        )
+
+    final_url = urlparse(page.url)
+    final_host = (final_url.hostname or "").lower()
+    assert final_url.scheme == "https", f"Customer Account 登录页不是 HTTPS：{page.url}"
+    assert _is_trusted_shopify_account_host(final_host), (
+        "Customer Account 登录入口跳转到了非受信任域名："
+        f"{page.url}（原始入口：{href}）"
+    )
+
+    page.locator("main").wait_for(state="visible", timeout=15_000)
+    body = page.locator("body").inner_text().strip()
+    assert body, f"Customer Account 登录页正文为空：{page.url}"
+    body_text = body.lower()
+    error_markers = ("404 error", "page not found", "internal server error")
+    assert not any(marker in body_text for marker in error_markers), (
+        f"Customer Account 登录入口打开了错误页：{page.url}"
+    )
+    assert re.search(r"\bsign\s*in\b", body, re.I), (
+        f"Customer Account 登录页缺少 Sign in 文案：{page.url}"
+    )
+    email_field = page.locator(
+        'input[type="email"]:visible, input[autocomplete="email"]:visible'
+    ).first
+    expect(email_field).to_be_visible()
+
+
 def _click_and_check_destination(home, page, link):
     """关闭弹窗后点击主题当前配置的链接，并检查真实落地页。"""
     home.close_welcome_popup()
@@ -317,14 +368,18 @@ def test_hero_lcp_media_is_eager(home, page, test_platform):
 
 
 def test_configured_internal_links_are_available(home, page, test_platform):
-    """REQ-04：扫描首页当前配置的站内链接，排除错误页和疑似白屏。"""
+    """REQ-04：扫描首页普通站内业务链接，排除错误页和疑似白屏。"""
     home.close_welcome_popup()
     expect(home.welcome_popup).to_be_hidden()
     configured = page.locator(
         '[role="region"][aria-label="Announcement bar"] a[href], '
         'header a[href], main a[href], footer a[href]'
     ).evaluate_all(
-        """nodes => nodes.map(node => ({
+        """nodes => nodes
+        // ``hidden`` 是语义上不向用户提供的模板备用入口；不要把它们混入
+        // 首页实际可用链接巡检。不能泛用 :visible，避免漏掉隐藏轮播业务链接。
+        .filter(node => !node.hidden && !node.closest('[hidden]'))
+        .map(node => ({
             text: (node.innerText || node.getAttribute('aria-label') || node.title || '').trim(),
             href: node.href
         }))"""
@@ -335,8 +390,11 @@ def test_configured_internal_links_are_available(home, page, test_platform):
         parsed = urlparse(item["href"])
         if parsed.netloc != host or parsed.scheme not in ("http", "https"):
             continue
-        # Shopify 系统页在未登录或缺少查询条件时可能返回空壳，不纳入首页业务链接检查。
-        if parsed.path in {"/account", "/cart", "/search", "/checkout"}:
+        # Shopify 系统页不属于首页普通业务落地页。Customer Account 的 OAuth
+        # 重定向会在独立用例中用真实浏览器检验，不能用接口响应正文判白屏。
+        if parsed.path in {"/account", "/cart", "/search", "/checkout"} or parsed.path.startswith(
+            "/customer_authentication/"
+        ):
             continue
         key = parsed._replace(fragment="").geturl()
         links.setdefault(key, item["text"] or parsed.path or "首页")
@@ -356,8 +414,10 @@ def test_configured_internal_links_are_available(home, page, test_platform):
         status = probe["status"]
         body = probe["body"]
         visible_text = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", body))).strip()
-        if status == 404:
-            failures.append((label, url, "HTTP 404"))
+        if 400 <= status < 500:
+            # 除已排除的系统入口外，任何 4xx 都应如实报告 HTTP 状态，不能被
+            # 空响应正文误写成“疑似白屏”。
+            failures.append((label, url, f"HTTP {status}"))
         elif status >= 500:
             failures.append((label, url, f"HTTP {status}"))
         elif len(visible_text) < 20:
@@ -372,6 +432,30 @@ def test_configured_internal_links_are_available(home, page, test_platform):
             pass
         details = [f"{label!r} -> {url}（{reason}）" for label, url, reason in failures]
         raise AssertionError("首页实际配置链接异常：\n" + "\n".join(details))
+
+
+def test_customer_account_login_entry_is_usable(home, page, test_platform):
+    """REQ-04A：当前可见 Log in 入口可打开 Shopify 托管的正常登录页。"""
+    home.close_welcome_popup()
+    account_link = page.get_by_role("link", name=re.compile(r"^log in$", re.I))
+    expect(account_link).to_have_count(1)
+    expect(account_link).to_be_visible()
+    href = account_link.get_attribute("href")
+    assert href and href != "#", "当前可见 Log in 入口缺少有效 href"
+
+    # 先再次关闭可能延迟出现的优惠弹窗，再真实点击当前端入口。这样能发现
+    # 遮罩、pointer-events 或 onclick 回归导致用户实际无法进入登录页的问题。
+    home.close_popup_before_click()
+    # 真实浏览器导航会跟随 jujubit.ai → Shopify Customer Account 的 OAuth
+    # 重定向，所得页面与用户实际点击后的页面一致；不输入邮箱或提交登录表单。
+    home.pace_link_check_request()
+    try:
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=30_000) as navigation:
+            account_link.click()
+        response = navigation.value
+    except PlaywrightError as error:
+        raise AssertionError(f"Log in 入口点击后未能打开 Customer Account 登录页：{href}") from error
+    _assert_customer_account_login_page(page, response, href)
 
 
 def test_configured_navigation_and_hero_links_can_open(home, page, test_platform):

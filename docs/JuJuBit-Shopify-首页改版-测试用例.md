@@ -78,7 +78,8 @@
 | SEO | P0 | 检查 H1 | 全页唯一，文本为 `Create Your Own Custom Figurine From a Photo` | UI |
 | SEO | P0 | 禁用 JavaScript 后请求首页 HTML | H1、导航、主要区块和链接存在于服务端 HTML | API |
 | SEO | P1 | 检查 Organization、WebSite JSON-LD | JSON 可解析；名称、URL 等与可见内容同源一致 | UI/API |
-| 链接 | P0 | 关闭优惠弹窗，读取并遍历首页实际配置的公告、Header、Hero、主要区块与 Footer 站内链接 | 每个实际 href 均非 404/5xx，响应正文不为空且无白屏；不预设固定路径 | UI/API |
+| 链接 | P0 | 关闭优惠弹窗，读取并遍历首页实际配置的公告、Header、Hero、主要区块与 Footer 普通站内业务链接 | 每个实际 href 均非 4xx/5xx，响应正文不为空且无白屏；不预设固定路径。Shopify Customer Account 系统入口不以接口正文长度判定 | UI/API |
+| 账户入口 | P0 | 关闭优惠弹窗后，以真实浏览器打开当前可见的 `Log in` 入口 | 可从店铺跳转至受信任的 Shopify Customer Account 登录页；登录页有主内容、`Sign in` 文案和可见邮箱输入框，无 404/服务错误。只验证入口，不输入邮箱或提交表单 | UI |
 | 链接 | P0 | 关闭优惠弹窗后，真实点击当前配置的 Create 导航与 Hero CTA | 跳转到配置目标；页面正文非空，无白屏或错误页 | UI |
 | 性能 | P0 | 检查首个 Hero/LCP 图片 | 不含 `loading=lazy`；资源优先级合理 | UI |
 | 性能 | P0 | 加载并记录布局偏移 | 图片具备 width/height 或 aspect-ratio；CLS `<= 0.1` | UI/性能工具 |
