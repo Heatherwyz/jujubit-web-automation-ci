@@ -165,12 +165,116 @@ class CartGeneratedResultTests(unittest.TestCase):
         page.evaluate.assert_called_once()
         script, params = page.evaluate.call_args.args
         self.assertIn("elementFromPoint", script)
+        self.assertIn("element.scrollIntoView", script)
+        self.assertIn("reacquire: true", script)
+        # 位于首屏之外的 Creator 控件也属于已渲染控件；先滚动再判断是否在视口，
+        # 不能在候选过滤阶段用 rect 与 innerWidth/innerHeight 将其排除。
+        rendered_block = script.split(
+            "const isRendered = element =>", 1
+        )[1].split("const isInViewport = element =>", 1)[0]
+        self.assertNotIn("rect.right > 0", rendered_block)
+        self.assertIn("rect.right > 0", script.split("const isInViewport", 1)[1])
         self.assertNotIn("element.click()", script)
         self.assertNotIn("requestAnimationFrame", script)
         self.assertNotIn("hit.contains(element)", script)
         self.assertEqual(params["exactText"], "Add to Cart")
         page.touchscreen.tap.assert_called_once_with(120, 240)
         page.mouse.click.assert_not_called()
+
+    def test_dom_click_scrolls_offscreen_control_then_reacquires(self) -> None:
+        """视口外控件先滚动；新一轮定位成功后才发送一次真实点击。"""
+        page = Mock()
+        page.evaluate.side_effect = [
+            {
+                "ok": False,
+                "matchCount": 1,
+                "reacquire": True,
+                "reason": "控件已滚动到视口，等待重新定位",
+            },
+            {
+                "ok": True,
+                "matchCount": 1,
+                "x": 420,
+                "y": 520,
+                "coarsePointer": False,
+            },
+        ]
+        cart = self._cart(page)
+
+        cart._click_visible_control(
+            CartPage.CREATOR_ACTION_BUTTON_SELECTOR,
+            description="点击 Add to Cart",
+            exact_text="Add to Cart",
+        )
+
+        self.assertEqual(page.evaluate.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(100)
+        page.mouse.click.assert_called_once_with(420, 520)
+        page.touchscreen.tap.assert_not_called()
+
+    def test_dom_click_reacquires_if_portal_replaces_node_after_scroll(self) -> None:
+        """滚动触发 Portal 换节点时，允许短暂无匹配并继续重新查询。"""
+        page = Mock()
+        page.evaluate.side_effect = [
+            {
+                "ok": False,
+                "matchCount": 1,
+                "reacquire": True,
+                "reason": "控件已滚动到视口，等待重新定位",
+            },
+            {
+                "ok": False,
+                "matchCount": 0,
+                "reason": "匹配到 0 个可见控件",
+            },
+            {
+                "ok": True,
+                "matchCount": 1,
+                "x": 360,
+                "y": 480,
+                "coarsePointer": True,
+            },
+        ]
+        cart = self._cart(page)
+
+        cart._click_visible_control(
+            CartPage.CREATOR_ACTION_BUTTON_SELECTOR,
+            description="切换到 2D 结果",
+            exact_text="2D",
+        )
+
+        self.assertEqual(page.evaluate.call_count, 3)
+        self.assertEqual(page.wait_for_timeout.call_count, 2)
+        page.touchscreen.tap.assert_called_once_with(360, 480)
+        page.mouse.click.assert_not_called()
+
+    def test_dom_click_filters_zero_size_and_hidden_responsive_copies(self) -> None:
+        """响应式隐藏副本被排除后，只允许唯一的活动副本提供坐标。"""
+        page = Mock()
+        page.evaluate.return_value = {
+            "ok": True,
+            "matchCount": 1,
+            "x": 600,
+            "y": 720,
+            "coarsePointer": False,
+        }
+        cart = self._cart(page)
+
+        cart._click_visible_control(
+            CartPage.CREATOR_ACTION_BUTTON_SELECTOR,
+            description="点击 Add to Cart",
+            exact_text="Add to Cart",
+        )
+
+        script = page.evaluate.call_args.args[0]
+        rendered_block = script.split(
+            "const isRendered = element =>", 1
+        )[1].split("const isInViewport = element =>", 1)[0]
+        self.assertIn("rect.width > 1 && rect.height > 1", rendered_block)
+        self.assertIn("for (let node = element; node; node = node.parentElement)", rendered_block)
+        self.assertIn("style.display === 'none'", rendered_block)
+        self.assertIn("style.visibility === 'hidden'", rendered_block)
+        page.mouse.click.assert_called_once_with(600, 720)
 
     def test_drawer_render_check_rejects_slide_animation_middle_frame(self) -> None:
         """抽屉仅与视口相交还不够，右边缘贴齐后才算真正打开。"""
@@ -297,7 +401,7 @@ class CartGeneratedResultTests(unittest.TestCase):
         cart = self._cart(page)
 
         cart._click_visible_control(
-            CartPage.RESULT_VIEW_BUTTON_SELECTOR,
+            CartPage.CREATOR_ACTION_BUTTON_SELECTOR,
             description="切换到 2D 结果",
             exact_text="2D",
         )
@@ -319,7 +423,7 @@ class CartGeneratedResultTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AssertionError, "匹配到 2 个可见控件"):
             cart._click_visible_control(
-                CartPage.RESULT_VIEW_BUTTON_SELECTOR,
+                CartPage.CREATOR_ACTION_BUTTON_SELECTOR,
                 description="切换到 3D 结果",
                 exact_text="3D",
             )
@@ -341,7 +445,7 @@ class CartGeneratedResultTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AssertionError, "匹配到 0 个可见控件"):
             cart._click_visible_control(
-                CartPage.RESULT_VIEW_BUTTON_SELECTOR,
+                CartPage.CREATOR_ACTION_BUTTON_SELECTOR,
                 description="切换到 2D 结果",
                 exact_text="2D",
             )
@@ -351,8 +455,8 @@ class CartGeneratedResultTests(unittest.TestCase):
         page.mouse.click.assert_not_called()
         page.touchscreen.tap.assert_not_called()
 
-    def test_result_view_click_covers_pc_portal_and_h5_root(self) -> None:
-        """2D/3D 点击同时覆盖 PC Portal 与 H5 Creator，且只调用一次点击助手。"""
+    def test_result_view_click_is_not_coupled_to_portal_container(self) -> None:
+        """2D/3D 点击不依赖 PC/H5 会变化的 Portal 容器层级。"""
         page = Mock()
         cart = self._cart(page)
         cart.home = Mock()
@@ -362,8 +466,7 @@ class CartGeneratedResultTests(unittest.TestCase):
 
         cart.home.close_popup_before_click.assert_called_once_with()
         cart._click_visible_control.assert_called_once_with(
-            "#jjb-create-canvas button, "
-            ".product-image-container > .jjb-app button",
+            "main button",
             description="切换到 2D 结果",
             exact_text="2D",
         )

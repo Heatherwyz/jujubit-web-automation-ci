@@ -56,11 +56,10 @@ class CartPage:
         r"^Add \$[\d,]+(?:\.\d{2})? more to enjoy Free Shipping$"
     )
     QUALIFIED_SHIPPING_COPY = "You've qualified for free standard shipping"
-    # PC 结果区由前端 Portal 挂到左侧商品图容器，H5 则仍位于 Creator 根节点。
-    RESULT_VIEW_BUTTON_SELECTOR = (
-        "#jjb-create-canvas button, "
-        ".product-image-container > .jjb-app button"
-    )
+    # Creator 会按端和运行阶段把结果区 Portal 到不同容器，容器层级不是稳定契约。
+    # 2D/3D 与 Add to Cart 都以唯一、完整按钮文案定位；点击助手还会排除响应式
+    # 隐藏副本、禁用控件和被遮挡控件，因此不会把同名旧节点当成可操作按钮。
+    CREATOR_ACTION_BUTTON_SELECTOR = "main button"
     CHECKOUT_SUMMARY_TOGGLE_SELECTOR = (
         'button[aria-controls][aria-expanded][data-event-name^="order_summary_"]'
     )
@@ -733,7 +732,7 @@ class CartPage:
         """切换 2D/3D，并由后续可见性断言确认真实结果。"""
         self.home.close_popup_before_click()
         self._click_visible_control(
-            self.RESULT_VIEW_BUTTON_SELECTOR,
+            self.CREATOR_ACTION_BUTTON_SELECTOR,
             description=f"切换到 {name} 结果",
             exact_text=name,
         )
@@ -746,7 +745,13 @@ class CartPage:
         exact_text: str = "",
         allow_navigation: bool = False,
     ) -> None:
-        """确认控件未被遮挡后，用真实鼠标或触摸事件点击。"""
+        """确认控件唯一、可用且未被遮挡后，用真实输入事件点击。
+
+        Creator 的操作按钮可能在当前视口之外，滚动时 React Portal 又可能
+        替换对应 DOM 节点。因此视口外控件必须分两阶段处理：浏览器第一轮只
+        执行 ``scrollIntoView`` 并要求重新定位；Python 下一轮重新查询 DOM，
+        再取得新节点坐标并发送一次真实鼠标/触摸事件。
+        """
         # GitHub Chromium 在 H5 滚动到底部后，偶尔会在元素已可见、可用、稳定时
         # 卡在 Locator.click 的动作性等待。这里先用同步 DOM 读取取得唯一控件坐标，
         # 再由 Playwright Mouse/Touchscreen 发送真实输入事件，不调用 element.click()。
@@ -758,22 +763,34 @@ class CartPage:
         before_url = self.page.url
         try:
             target = {}
-            # React Portal 重渲染时可能短暂移除按钮；只重新取得坐标，绝不重放点击。
+            # React Portal 重渲染时可能短暂移除或替换按钮；每轮都从 selector
+            # 重新查询当前 DOM。这里仅重取坐标，真实输入事件始终只发送一次。
             for acquisition_attempt in range(21):
                 target = self.page.evaluate(
                     r"""params => {
                     const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
                     const activeMarker = 'data-jujubit-active-drawer';
+                    // “已渲染”和“当前位于视口”是两件事。Creator 的 2D/3D、
+                    // Add to Cart 经常位于首屏之外，必须先找到已渲染控件，
+                    // scrollIntoView 后再检查遮挡；否则正常控件会被误报为 0 个。
                     const isRendered = element => {
                         if (!element) return false;
-                        const style = getComputedStyle(element);
                         const rect = element.getBoundingClientRect();
-                        return style.display !== 'none'
-                            && style.visibility !== 'hidden'
-                            && Number(style.opacity || 1) > 0
-                            && rect.width > 1
-                            && rect.height > 1
-                            && rect.right > 0
+                        if (!(rect.width > 1 && rect.height > 1)) return false;
+                        for (let node = element; node; node = node.parentElement) {
+                            const style = getComputedStyle(node);
+                            if (style.display === 'none'
+                                || style.visibility === 'hidden'
+                                || Number(style.opacity || 1) <= 0.01) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    };
+                    const isInViewport = element => {
+                        if (!isRendered(element)) return false;
+                        const rect = element.getBoundingClientRect();
+                        return rect.right > 0
                             && rect.bottom > 0
                             && rect.left < innerWidth
                             && rect.top < innerHeight;
@@ -785,9 +802,9 @@ class CartPage:
                         document.querySelectorAll(`[${activeMarker}]`)
                             .forEach(element => element.removeAttribute(activeMarker));
                         const roots = [...document.querySelectorAll('.ccd.is-open')]
-                            .filter(root => isRendered(root))
+                            .filter(root => isInViewport(root))
                             .filter(root => [...root.querySelectorAll('.ccd-panel')]
-                                .some(panel => isRendered(panel)
+                                .some(panel => isInViewport(panel)
                                     && Math.abs(
                                         panel.getBoundingClientRect().right - innerWidth
                                     ) <= 4));
@@ -832,15 +849,32 @@ class CartPage:
                             reason: '控件处于禁用状态',
                         };
                     }
-                    element.scrollIntoView({
-                        block: 'center', inline: 'center', behavior: 'instant'
-                    });
                     const rect = element.getBoundingClientRect();
+                    const centerX = rect.left + rect.width / 2;
+                    const centerY = rect.top + rect.height / 2;
+                    const centerInViewport = isInViewport(element)
+                        && centerX >= 0
+                        && centerY >= 0
+                        && centerX < innerWidth
+                        && centerY < innerHeight;
+                    if (!centerInViewport) {
+                        // 滚动事件可能同步触发 Portal 重绘，绝不能继续读取这个
+                        // 旧 element 的坐标。返回后由 Python 在下一轮重新定位。
+                        element.scrollIntoView({
+                            block: 'center', inline: 'center', behavior: 'instant'
+                        });
+                        return {
+                            ok: false,
+                            matchCount: 1,
+                            reacquire: true,
+                            reason: '控件已滚动到视口，等待重新定位',
+                        };
+                    }
                     const x = Math.max(
-                        0, Math.min(innerWidth - 1, rect.left + rect.width / 2)
+                        0, Math.min(innerWidth - 1, centerX)
                     );
                     const y = Math.max(
-                        0, Math.min(innerHeight - 1, rect.top + rect.height / 2)
+                        0, Math.min(innerHeight - 1, centerY)
                     );
                     const hit = document.elementFromPoint(x, y);
                     if (!hit || (hit !== element && !element.contains(hit))) {
@@ -863,7 +897,12 @@ class CartPage:
                 }""",
                     params,
                 )
-                if target.get("ok") or target.get("matchCount") != 0:
+                # 0 个候选通常是 Portal 的短暂卸载；reacquire 则表示刚完成
+                # 滚动，旧节点无论是否仍连接 DOM 都不得用于点击。
+                should_reacquire = bool(target.get("reacquire")) or (
+                    target.get("matchCount") == 0
+                )
+                if target.get("ok") or not should_reacquire:
                     break
                 if acquisition_attempt < 20:
                     self.page.wait_for_timeout(100)
@@ -946,7 +985,7 @@ class CartPage:
             self._pace_cart_request()
             # 加购是 AJAX 写入；DOM 点击后仍严格等待 cart/add.js 和抽屉自然打开。
             self._click_visible_control(
-                "#jjb-create-canvas button",
+                self.CREATOR_ACTION_BUTTON_SELECTOR,
                 description="点击 Add to Cart",
                 exact_text="Add to Cart",
             )
