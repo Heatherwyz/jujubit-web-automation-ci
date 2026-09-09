@@ -276,6 +276,109 @@ class CartGeneratedResultTests(unittest.TestCase):
         self.assertIn("style.visibility === 'hidden'", rendered_block)
         page.mouse.click.assert_called_once_with(600, 720)
 
+    def test_cart_image_wait_reacquires_after_portal_redraw(self) -> None:
+        """Portal 短暂卸载后重新查询当前 DOM，不能复用带旧标记的 Locator。"""
+        page = Mock()
+        page.evaluate.side_effect = [
+            {"ready": False, "reason": "可操作购物车数量为 0"},
+            {
+                "ready": True,
+                "src": "https://cdn.jujubit.ai/generated/result.png",
+                "complete": True,
+                "naturalWidth": 512,
+            },
+        ]
+        cart = self._cart(page)
+
+        cart._assert_cart_image_loaded(
+            root_selector=".ccd.is-open",
+            item_selector=".ccd-item",
+            image_selector=".ccd-item-img",
+            description="半屏购物车",
+            require_right_edge=True,
+            timeout=300,
+        )
+
+        self.assertEqual(page.evaluate.call_count, 2)
+        scripts = [call.args[0] for call in page.evaluate.call_args_list]
+        self.assertTrue(all("document.querySelectorAll" in script for script in scripts))
+        params = page.evaluate.call_args.args[1]
+        self.assertEqual(params["rootSelector"], ".ccd.is-open")
+        self.assertTrue(params["requireRightEdge"])
+        page.wait_for_timeout.assert_called_once_with(150)
+
+    def test_cart_image_wait_filters_hidden_responsive_copies(self) -> None:
+        """图片状态脚本会排除零尺寸和祖先隐藏的响应式副本。"""
+        page = Mock()
+        page.evaluate.return_value = {
+            "ready": True,
+            "src": "https://cdn.jujubit.ai/generated/result.png",
+            "complete": True,
+            "naturalWidth": 512,
+        }
+        cart = self._cart(page)
+
+        cart._assert_cart_image_loaded(
+            root_selector="custom-cart .cc",
+            item_selector=".cc-item",
+            image_selector=".cc-item-img",
+            description="全屏购物车",
+        )
+
+        script = page.evaluate.call_args.args[0]
+        self.assertIn("rect.width > 1 && rect.height > 1", script)
+        self.assertIn("for (let node = element; node; node = node.parentElement)", script)
+        self.assertIn("style.display === 'none'", script)
+        self.assertIn("style.visibility === 'hidden'", script)
+        self.assertIn("image.complete", script)
+        self.assertIn("image.naturalWidth", script)
+
+    def test_cart_image_wait_rejects_multiple_visible_roots(self) -> None:
+        """同时存在多个可操作购物车时立即失败，不能任取一个图片。"""
+        page = Mock()
+        page.evaluate.return_value = {
+            "ready": False,
+            "ambiguous": True,
+            "reason": "可操作购物车数量为 2",
+        }
+        cart = self._cart(page)
+
+        with self.assertRaisesRegex(AssertionError, "无法唯一定位.*数量为 2"):
+            cart._assert_cart_image_loaded(
+                root_selector=".ccd.is-open",
+                item_selector=".ccd-item",
+                image_selector=".ccd-item-img",
+                description="半屏购物车",
+                timeout=300,
+            )
+
+        page.evaluate.assert_called_once()
+        page.wait_for_timeout.assert_not_called()
+
+    def test_cart_image_wait_keeps_real_load_failure(self) -> None:
+        """图片持续未加载时必须超时失败，并保留 complete/naturalWidth 证据。"""
+        page = Mock()
+        page.evaluate.return_value = {
+            "ready": False,
+            "reason": "商品图片未完成加载：complete=true, naturalWidth=0",
+        }
+        cart = self._cart(page)
+
+        with self.assertRaisesRegex(
+            AssertionError,
+            "未在限定时间内加载完成.*complete=true, naturalWidth=0",
+        ):
+            cart._assert_cart_image_loaded(
+                root_selector="custom-cart .cc",
+                item_selector=".cc-item",
+                image_selector=".cc-item-img",
+                description="全屏购物车",
+                timeout=150,
+            )
+
+        self.assertEqual(page.evaluate.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(150)
+
     def test_drawer_render_check_rejects_slide_animation_middle_frame(self) -> None:
         """抽屉仅与视口相交还不够，右边缘贴齐后才算真正打开。"""
         page = Mock()

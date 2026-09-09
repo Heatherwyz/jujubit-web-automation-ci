@@ -1130,7 +1130,13 @@ class CartPage:
         expect(self.drawer.locator(".ccd-title")).to_have_text("Cart")
         expect(self.drawer.locator(".ccd-close")).to_be_visible()
         expect(self.drawer.locator(".ccd-item:visible")).to_have_count(1)
-        self._assert_cart_image_loaded(self.drawer_item.locator(".ccd-item-img"))
+        self._assert_cart_image_loaded(
+            root_selector=".ccd.is-open",
+            item_selector=".ccd-item",
+            image_selector=".ccd-item-img",
+            description="半屏购物车",
+            require_right_edge=True,
+        )
         expect(self.drawer_item.locator(".ccd-item-title")).to_have_text(re.compile(r"\S"))
         expect(self.drawer_item.locator(".ccd-item-variant")).to_have_text(
             re.compile(r"\S+\s*:\s*\S+")
@@ -1740,7 +1746,12 @@ class CartPage:
             "aria-label", "Close"
         )
         expect(self.full_cart.locator(".cc-item:visible")).to_have_count(1)
-        self._assert_cart_image_loaded(self.full_cart_item.locator(".cc-item-img"))
+        self._assert_cart_image_loaded(
+            root_selector="custom-cart .cc",
+            item_selector=".cc-item",
+            image_selector=".cc-item-img",
+            description="全屏购物车",
+        )
         expect(self.full_cart_item.locator(".cc-item-title")).to_have_text(
             re.compile(r"\S")
         )
@@ -2388,24 +2399,118 @@ class CartPage:
         parsed = urlparse(image_url)
         return parsed.path or image_url.split("?", 1)[0]
 
-    @staticmethod
-    def _assert_cart_image_loaded(image, timeout: int = 30_000) -> None:
-        """在商品节点重绘期间轮询图片，避免一次 evaluate 命中旧节点。"""
-        deadline = time.monotonic() + max(1, timeout) / 1_000
-        last_error = "图片尚未加载完成"
-        while time.monotonic() < deadline:
+    def _assert_cart_image_loaded(
+        self,
+        *,
+        root_selector: str,
+        item_selector: str,
+        image_selector: str,
+        description: str,
+        require_right_edge: bool = False,
+        timeout: int = 30_000,
+    ) -> None:
+        """从当前可见购物车的一帧 DOM 中确认唯一商品图片已真实加载。
+
+        半屏购物车由 React Portal 渲染，更新时会替换根节点和临时活动标记。
+        因此每轮都从 document 重新查询可见根、商品和图片，并在一次
+        ``page.evaluate`` 中读取完整状态，避免复用旧 Locator 后继承默认
+        10 秒动作等待。持续没有有效图片时仍会按总超时明确失败。
+        """
+        attempts = max(1, timeout // 150 + 1)
+        last_reason = f"{description}图片尚未加载完成"
+        params = {
+            "rootSelector": root_selector,
+            "itemSelector": item_selector,
+            "imageSelector": image_selector,
+            "requireRightEdge": require_right_edge,
+        }
+        for attempt in range(attempts):
             try:
-                if image.is_visible() and image.evaluate(
-                    "img => img.complete && img.naturalWidth > 0"
-                ):
+                state = self.page.evaluate(
+                    r"""params => {
+                        const rendered = element => {
+                            if (!element) return false;
+                            const rect = element.getBoundingClientRect();
+                            if (!(rect.width > 1 && rect.height > 1
+                                && rect.right > 0 && rect.bottom > 0
+                                && rect.left < innerWidth && rect.top < innerHeight)) {
+                                return false;
+                            }
+                            for (let node = element; node; node = node.parentElement) {
+                                const style = getComputedStyle(node);
+                                if (style.display === 'none'
+                                    || style.visibility === 'hidden'
+                                    || Number(style.opacity || 1) <= 0.01) {
+                                    return false;
+                                }
+                            }
+                            return true;
+                        };
+                        const roots = [...document.querySelectorAll(params.rootSelector)]
+                            .filter(rendered)
+                            .filter(root => !params.requireRightEdge
+                                || [...root.querySelectorAll('.ccd-panel')]
+                                    .some(panel => rendered(panel)
+                                        && Math.abs(
+                                            panel.getBoundingClientRect().right - innerWidth
+                                        ) <= 4));
+                        if (roots.length !== 1) {
+                            return {
+                                ready: false,
+                                ambiguous: roots.length > 1,
+                                reason: `可操作购物车数量为 ${roots.length}`,
+                            };
+                        }
+                        const items = [...roots[0].querySelectorAll(params.itemSelector)]
+                            .filter(rendered);
+                        if (items.length !== 1) {
+                            return {
+                                ready: false,
+                                ambiguous: items.length > 1,
+                                reason: `可见商品数量为 ${items.length}`,
+                            };
+                        }
+                        const images = [...items[0].querySelectorAll(params.imageSelector)]
+                            .filter(rendered);
+                        if (images.length !== 1) {
+                            return {
+                                ready: false,
+                                ambiguous: images.length > 1,
+                                reason: `可见商品图片数量为 ${images.length}`,
+                            };
+                        }
+                        const image = images[0];
+                        const src = image.currentSrc || image.getAttribute('src') || '';
+                        const complete = Boolean(image.complete);
+                        const naturalWidth = Number(image.naturalWidth || 0);
+                        if (!src.trim()) {
+                            return {ready: false, reason: '商品图片地址为空'};
+                        }
+                        if (!complete || naturalWidth <= 0) {
+                            return {
+                                ready: false,
+                                reason: `商品图片未完成加载：complete=${complete}, naturalWidth=${naturalWidth}`,
+                            };
+                        }
+                        return {ready: true, src, complete, naturalWidth};
+                    }""",
+                    params,
+                )
+                if state and state.get("ready"):
                     return
             except PlaywrightError as error:
-                last_error = str(error).split("Call log:", 1)[0].strip() or last_error
-            try:
-                image.wait_for(state="visible", timeout=500)
-            except PlaywrightError:
-                pass
-            # Locator 没有稳定公开的 page 引用；短暂让出事件循环即可让
-            # React/图片加载完成，下一轮会重新解析同一定位器。
-            time.sleep(0.15)
-        raise AssertionError(f"购物车中的生成图片未在限定时间内加载完成：{last_error}")
+                state = {
+                    "ready": False,
+                    "reason": str(error).split("Call log:", 1)[0].strip()
+                    or f"{description}正在重绘",
+                }
+            last_reason = (state or {}).get("reason", last_reason)
+            if state and state.get("ambiguous"):
+                raise AssertionError(
+                    f"购物车中的生成图片无法唯一定位：{last_reason}"
+                )
+            if attempt < attempts - 1:
+                self.page.wait_for_timeout(150)
+        raise AssertionError(
+            f"购物车中的生成图片未在限定时间内加载完成：{last_reason}"
+        )
