@@ -172,6 +172,24 @@ class CartRateLimitTests(unittest.TestCase):
 
         self.assertEqual(cart._rate_limited_urls, [])
 
+    def test_listener_ignores_analytics_ingest_429_without_opening_cart_circuit(self) -> None:
+        """分析埋点限流不能把实际购物车回归误标为未完成。"""
+        cart = self._cart([_Response(200, payload={"item_count": 1})])
+        cart._record_rate_limit(
+            _Response(
+                429,
+                url=(
+                    "https://jujubit.ai/apps/monitor/api/collect/batch/add/"
+                    "?source=playwright"
+                ),
+            )
+        )
+
+        self.assertEqual(cart._rate_limited_urls, [])
+        self.assertEqual(cart.cart_json()["item_count"], 1)
+        self.assertEqual(len(cart.page.request.calls), 1)
+        self.assertEqual(cart.config._jujubit_cart_rate_limited, "")
+
     def test_retry_helper_rejects_non_idempotent_write_operations(self) -> None:
         """未来维护时也不能把加购、改数量等写接口接入自动重试。"""
         cart = self._cart([])

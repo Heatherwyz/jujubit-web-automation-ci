@@ -53,6 +53,22 @@ def _parse_args():
         help="只执行购物车全部用例，不执行首页用例。",
     )
     parser.add_argument(
+        "--cart-daily",
+        action="store_true",
+        help=(
+            "执行每日购物车分层回归：PC 全量 15 条 + H5 关键 6 条；"
+            "完整 PC/H5 30 条请使用 --cart-only。"
+        ),
+    )
+    parser.add_argument(
+        "--cart-suite",
+        choices=("smoke", "daily", "full"),
+        help=(
+            "统一购物车套件入口：smoke（1 条主链路）、daily（PC 15 + H5 关键 6）"
+            "或 full（PC 15 + H5 15）。"
+        ),
+    )
+    parser.add_argument(
         "--cart-request-interval",
         type=float,
         default=6.0,
@@ -75,10 +91,16 @@ def main() -> int:
         args.cart_smoke,
         args.cart_smoke_only,
         args.cart_only,
+        args.cart_daily,
     )
+    if args.cart_suite and any(selected_cart_modes):
+        raise SystemExit(
+            "--cart-suite 不能与 --include-cart、--cart-smoke、--cart-smoke-only、"
+            "--cart-only 或 --cart-daily 同时使用。"
+        )
     if sum(bool(value) for value in selected_cart_modes) > 1:
         raise SystemExit(
-            "--include-cart、--cart-smoke、--cart-smoke-only、--cart-only 只能选择一个。"
+            "--include-cart、--cart-smoke、--cart-smoke-only、--cart-only、--cart-daily 只能选择一个。"
         )
     if args.cart_request_interval < 0:
         raise SystemExit("--cart-request-interval 不能小于 0。")
@@ -123,15 +145,32 @@ def main() -> int:
         command.append("--pw-manual-verification")
     if args.cart_smoke:
         # 综合 Smoke 只跑 1 条单上下文主链路，避免多个登录上下文连续撞 WAF。
-        command.extend(["-m", "not cart_session or cart_smoke"])
+        command.extend(["--pw-cart-suite", "smoke", "-m", "not cart_session or cart_smoke"])
     elif args.cart_smoke_only:
         # 独立购物车工作流不重复跑首页，只验证低频代表性购物车路径。
-        command.extend(["-m", "cart_session and cart_smoke"])
+        command.extend(["--pw-cart-suite", "smoke", "-m", "cart_session and cart_smoke"])
     elif args.cart_only:
-        command.extend(["-m", "cart_session and not cart_smoke"])
+        command.extend(["--pw-cart-suite", "full", "-m", "cart_session and not cart_smoke"])
+    elif args.cart_daily:
+        # 每日保留 PC 全量；collection hook 按结构化 Case ID 精确保留 H5 关键 6 条。
+        command.extend(
+            [
+                "--pw-cart-suite",
+                "daily",
+                "-m",
+                "cart_session and not cart_smoke",
+            ]
+        )
+    elif args.cart_suite == "smoke":
+        # 统一入口的 Smoke 默认只跑单一购物车主链路，不带首页。
+        command.extend(["--pw-cart-suite", "smoke", "-m", "cart_session and cart_smoke"])
+    elif args.cart_suite == "daily":
+        command.extend(["--pw-cart-suite", "daily", "-m", "cart_session and not cart_smoke"])
+    elif args.cart_suite == "full":
+        command.extend(["--pw-cart-suite", "full", "-m", "cart_session and not cart_smoke"])
     elif args.include_cart:
         # 完整回归保留原有 15 条逻辑用例；独立 CI Smoke 不重复计入 30 条记录。
-        command.extend(["-m", "not cart_smoke"])
+        command.extend(["--pw-cart-suite", "full", "-m", "not cart_smoke"])
     elif not args.include_cart:
         # 购物车主流程会真实创建生成任务；默认回归不产生这类外部副作用。
         command.extend(["-m", "not cart_session"])

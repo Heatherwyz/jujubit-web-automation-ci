@@ -284,13 +284,15 @@ def _click_and_check_destination(home, page, link):
     before_url = page.url
     target_path = urlparse(href).path or "/"
     # 部分 Shopify 入口通过 history API 或重定向完成跳转，不一定触发 expect_navigation 事件。
-    link.click()
+    home.click_unobstructed(link, "首页链接")
     page.wait_for_function(
         """({ before, path }) => location.href !== before && location.pathname === path""",
         arg={"before": before_url, "path": target_path},
         timeout=30_000,
     )
-    page.wait_for_load_state("domcontentloaded")
+    # URL 已经变成目标路径后，页面可能仍有 Shopify/第三方长连接继续占用
+    # 导航生命周期；此时重新等待一次 domcontentloaded 偶发拿不到对应事件。
+    # 最终是否可用由下面的可见 <main>、正文和错误页标记直接验收即可。
     # GitHub Runner 偶发进入独立的人机验证页，该页面本身没有业务 <main>。
     # 先识别访问环境拦截，再执行页面结构断言，避免被误记为白屏失败。
     _skip_if_site_verification_blocks_page(page, href)
@@ -437,11 +439,31 @@ def test_configured_internal_links_are_available(home, page, test_platform):
 def test_customer_account_login_entry_is_usable(home, page, test_platform):
     """REQ-04A：当前可见 Log in 入口可打开 Shopify 托管的正常登录页。"""
     home.close_welcome_popup()
-    account_link = page.get_by_role("link", name=re.compile(r"^log in$", re.I))
-    expect(account_link).to_have_count(1)
-    expect(account_link).to_be_visible()
-    href = account_link.get_attribute("href")
-    assert href and href != "#", "当前可见 Log in 入口缺少有效 href"
+    # 线上 A/B 实验存在两种真实入口：普通状态是 /account 链接，实验状态是
+    # Log In 按钮。只选择当前可见控件，避免把另一端或未命中实验的隐藏节点混入。
+    account_link = page.get_by_role(
+        "link", name=re.compile(r"^log in$", re.I)
+    ).filter(visible=True)
+    login_button = page.get_by_role(
+        "button", name=re.compile(r"^log in(?: to view membership)?$", re.I)
+    ).filter(visible=True)
+    visible_links = account_link.count()
+    visible_buttons = login_button.count()
+    # PC 主题切换实验的短暂窗口内，旧的 /account 图标和新的会员 Log In
+    # 按钮可能同时可见；两者都是有效用户入口。此时优先验收主按钮路径，不能
+    # 因为多了一个兼容入口就把正常页面误报为失败。
+    assert visible_links + visible_buttons >= 1, "当前端未找到可见登录入口"
+    login_control = login_button.first if visible_buttons else account_link.first
+    expect(login_control).to_be_visible()
+    href = login_control.get_attribute("href") or login_control.get_attribute(
+        "data-fallback-url"
+    )
+    # 普通链接必须具备可导航 href；会员按钮允许完全由主题脚本打开弹窗，
+    # 最终地址会在弹窗内登录链接或按钮直接跳转后取得。
+    if not visible_buttons:
+        assert href and href != "#", "当前可见 Log in 链接缺少有效 href"
+    else:
+        href = href or "会员 Log In 按钮"
 
     # 先再次关闭可能延迟出现的优惠弹窗，再真实点击当前端入口。这样能发现
     # 遮罩、pointer-events 或 onclick 回归导致用户实际无法进入登录页的问题。
@@ -449,12 +471,73 @@ def test_customer_account_login_entry_is_usable(home, page, test_platform):
     # 真实浏览器导航会跟随 jujubit.ai → Shopify Customer Account 的 OAuth
     # 重定向，所得页面与用户实际点击后的页面一致；不输入邮箱或提交登录表单。
     home.pace_link_check_request()
-    try:
-        with page.expect_navigation(wait_until="domcontentloaded", timeout=30_000) as navigation:
-            account_link.click()
-        response = navigation.value
-    except PlaywrightError as error:
-        raise AssertionError(f"Log in 入口点击后未能打开 Customer Account 登录页：{href}") from error
+    response = None
+    if not visible_buttons:
+        try:
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=30_000) as navigation:
+                home.click_unobstructed(login_control, "Log in 入口")
+            response = navigation.value
+        except PlaywrightError as error:
+            raise AssertionError(
+                f"Log in 入口点击后未能打开 Customer Account 登录页：{href}"
+            ) from error
+    else:
+        before_url = page.url
+        home.click_unobstructed(login_control, "Log In 按钮")
+        # 实验按钮可能直接跳转，也可能先打开会员弹窗。等待其中一种真实 UI
+        # 结果，不能读取 data-fallback-url 后用 page.goto 绕过按钮交互。
+        page.wait_for_function(
+            """before => {
+                if (location.href !== before) return true;
+                const roots = [...document.querySelectorAll(
+                    'dialog, [role="dialog"], [data-jjb-membership-modal]'
+                )];
+                return roots.some(root => {
+                    const style = getComputedStyle(root);
+                    if (style.display === 'none' || style.visibility === 'hidden') return false;
+                    return [...root.querySelectorAll('a[href]')].some(link => {
+                        const href = link.getAttribute('href') || '';
+                        const name = (link.innerText || link.getAttribute('aria-label') || '').trim();
+                        const linkStyle = getComputedStyle(link);
+                        return linkStyle.display !== 'none' && linkStyle.visibility !== 'hidden'
+                            && link.getBoundingClientRect().width > 1
+                            && (href.includes('/account')
+                                || href.includes('/customer_authentication/')
+                                || /^(customer account|sign in|log in)$/i.test(name));
+                    });
+                });
+            }""",
+            arg=before_url,
+            timeout=30_000,
+        )
+        if page.url == before_url:
+            modal = page.locator(
+                'dialog:visible, [role="dialog"]:visible, '
+                '[data-jjb-membership-modal]:visible'
+            )
+            modal_link = modal.locator(
+                'a[href*="/account"]:visible, '
+                'a[href*="/customer_authentication/"]:visible'
+            ).or_(
+                modal.get_by_role(
+                    "link",
+                    name=re.compile(r"^(?:customer account|sign in|log in)$", re.I),
+                )
+            ).first
+            expect(modal_link).to_be_visible()
+            modal_href = modal_link.get_attribute("href")
+            assert modal_href and modal_href != "#", "会员弹窗登录入口缺少有效 href"
+            href = modal_href
+            try:
+                with page.expect_navigation(
+                    wait_until="domcontentloaded", timeout=30_000
+                ) as navigation:
+                    home.click_unobstructed(modal_link, "会员弹窗 Customer Account 入口")
+                response = navigation.value
+            except PlaywrightError as error:
+                raise AssertionError(
+                    f"会员弹窗登录入口点击后未能打开 Customer Account：{href}"
+                ) from error
     _assert_customer_account_login_page(page, response, href)
 
 
@@ -468,7 +551,7 @@ def test_configured_navigation_and_hero_links_can_open(home, page, test_platform
     # 每次回到首页后重新关闭弹窗，再定位并点击当前 Hero CTA。
     home.open()
     home.close_welcome_popup()
-    hero_link = page.get_by_role("region", name="Banner").locator("a[href]:visible").first
+    hero_link = home.active_hero_cta()
     _click_and_check_destination(home, page, hero_link)
 
 

@@ -4,6 +4,7 @@
 ``test_platform`` 参数将其分别在 PC 和 H5 视口下运行。
 """
 
+import re
 from urllib.parse import urlparse
 
 from playwright.sync_api import expect
@@ -152,6 +153,16 @@ def test_tc15_header_tools_exist(home, page, test_platform):
         expect(page.get_by_role("button", name="Site navigation", exact=True)).to_be_attached()
     else:
         expect(page.get_by_role("link", name="Search", exact=True)).to_be_attached()
-    expect(page.get_by_role("link", name="Log in", exact=True)).to_be_attached()
+    # 线上不同端/主题版本可能显示 ``Log in`` 或 ``Log In``；语义没有变化，
+    # 这里按无障碍名称做大小写不敏感的精确匹配，避免把文案大小写当成功能失败。
+    # 登录入口处于主题 A/B 实验时可能是 /account 链接，也可能是打开会员
+    # 面板的 Log In 按钮；两种都是有效的当前端头部工具。
+    login_links = page.get_by_role(
+        "link", name=re.compile(r"^log in$", re.I)
+    ).filter(visible=True)
+    login_buttons = page.get_by_role(
+        "button", name=re.compile(r"^log in(?: to view membership)?$", re.I)
+    ).filter(visible=True)
+    assert login_links.count() + login_buttons.count() >= 1, "头部未展示可用登录入口"
     # 精确匹配 Cart，避免把购物车抽屉内的 Close cart 也算作头部入口。
     expect(page.get_by_role("button", name="Cart", exact=True)).to_be_attached()

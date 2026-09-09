@@ -47,6 +47,13 @@ MODULE_PATTERNS = {
     ),
 }
 
+# 购物车工作流传入 machine-readable 的 suite 值；卡片中始终展示面向业务的中文范围。
+SUITE_LABELS = {
+    "smoke": "Smoke：PC 主链路 1 条",
+    "daily": "每日分层：PC 15 条 + H5 关键 6 条",
+    "full": "完整回归：PC 15 条 + H5 15 条",
+}
+
 
 def parse_args() -> argparse.Namespace:
     """读取报告、GitHub 链接、执行元信息和本次测试状态。"""
@@ -73,6 +80,26 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("TEST_COMMIT", "") or os.getenv("GITHUB_SHA", ""),
     )
     parser.add_argument("--started-at", default=os.getenv("TEST_STARTED_AT", ""))
+    parser.add_argument(
+        "--suite",
+        default=os.getenv("TEST_SUITE", ""),
+        help="本次购物车执行套件：smoke、daily 或 full。",
+    )
+    parser.add_argument(
+        "--suite-label",
+        default=os.getenv("TEST_SUITE_LABEL", ""),
+        help="工作流传入的中文执行范围说明。",
+    )
+    parser.add_argument(
+        "--planned-cases",
+        default=os.getenv("TEST_PLANNED_CASES", ""),
+        help="工作流计划执行的用例数。",
+    )
+    parser.add_argument(
+        "--actual-cases",
+        default=os.getenv("TEST_ACTUAL_CASES", ""),
+        help="工作流从 JUnit XML 统计出的实际收集用例数。",
+    )
     return parser.parse_args()
 
 
@@ -290,6 +317,57 @@ def _format_started_at(value: str) -> str:
     return re.sub(r"(?<=\d)\.\d+(?=(?:Z|[+-]\d{2}:?\d{2})?$)", "", cleaned)
 
 
+def _case_count(value: str | int, fallback: str = "未标注") -> str:
+    """把工作流输出的用例数清理成可读文本，避免卡片展示空值或注入内容。"""
+    cleaned = str(value or "").strip()
+    if cleaned.isdigit():
+        return f"{int(cleaned)} 条"
+    return fallback
+
+
+def _known_case_count(value: str | int) -> int | None:
+    """仅把明确的非负整数识别为已知用例数。"""
+    cleaned = str(value or "").strip()
+    return int(cleaned) if cleaned.isdigit() else None
+
+
+def _case_count_mismatch(summary: Dict[str, Any], planned_cases: str | int) -> bool:
+    """判断已有 JUnit 结果是否少于或多于工作流计划数。"""
+    total = int(summary.get("total", 0))
+    planned = _known_case_count(planned_cases)
+    # total=0 继续交给“未取得测试结果”或“测试进程异常”逻辑处理。
+    return total > 0 and planned is not None and planned != total
+
+
+def _suite_execution_lines(
+    summary: Dict[str, Any],
+    suite: str,
+    suite_label: str,
+    planned_cases: str,
+    actual_cases: str,
+) -> str:
+    """生成套件范围及计划/实际数，实际数优先使用已解析的 JUnit 结果。"""
+    normalized_suite = str(suite or "").strip().lower()
+    label = _display_value(suite_label, fallback="")
+    if not label:
+        label = SUITE_LABELS.get(normalized_suite, "默认回归（未单独标注套件）")
+
+    planned = _case_count(planned_cases)
+    # JUnit 的 testcase 总数是本次真正进入结果报告的权威数据；工作流传值仅作为
+    # XML 未生成时的兜底，避免步骤异常时把计划数误写成实际执行数。
+    total = int(summary.get("total", 0))
+    actual = _case_count(total, fallback="") if total else ""
+    if not actual:
+        actual = _case_count(actual_cases, fallback="未生成结果")
+    mismatch_label = " **（计划与实际不一致）**" if _case_count_mismatch(
+        summary, planned_cases
+    ) else ""
+    return (
+        f"**执行套件**　{label}\n"
+        f"**计划 / 实际执行**　{planned} / {actual}{mismatch_label}"
+    )
+
+
 def _module_lines(summary: Dict[str, Any]) -> str:
     """生成“模块结果”列表；首页固定排在购物车之前。"""
     modules = summary.get("modules") or []
@@ -343,6 +421,10 @@ def card_template(
     actor: str = "",
     commit: str = "",
     started_at: str = "",
+    suite: str = "",
+    suite_label: str = "",
+    planned_cases: str = "",
+    actual_cases: str = "",
 ) -> Dict[str, object]:
     """生成包含执行信息、模块结果和报告入口的飞书卡片。"""
     total = int(summary.get("total", 0))
@@ -350,6 +432,7 @@ def card_template(
     rate_limited = _rate_limited_unfinished(summary)
     ordinary_skipped = _ordinary_skipped(summary)
     business_failures = _business_failures(summary)
+    case_count_mismatch = _case_count_mismatch(summary, planned_cases)
     normalized_exit_code = str(exit_code).strip()
     # pytest 的 1 表示“用例有失败”，已由 JUnit 明细解释；2~5 才是进程级异常。
     abnormal_exit = bool(normalized_exit_code and normalized_exit_code not in {"0", "1"})
@@ -359,6 +442,8 @@ def card_template(
         color, status = "red", "测试进程异常"
     elif total == 0:
         color, status = "orange", "未取得测试结果"
+    elif case_count_mismatch:
+        color, status = "orange", "计划与实际用例数不一致"
     elif rate_limited > 0:
         color, status = "orange", "受站点频控影响"
     elif ordinary_skipped > 0:
@@ -431,6 +516,9 @@ def card_template(
     )
     if run_id:
         execution_info += f"\n**运行标识**　{_display_value(run_id)}"
+    execution_scope = _suite_execution_lines(
+        summary, suite, suite_label, planned_cases, actual_cases
+    )
     elements = [
         {
             "tag": "div",
@@ -440,6 +528,8 @@ def card_template(
             },
         },
         {"tag": "div", "fields": fields},
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": execution_scope}},
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": execution_info}},
         {"tag": "hr"},
@@ -459,6 +549,22 @@ def card_template(
                     {
                         "tag": "plain_text",
                         "content": "HTTP 429 表示站点访问频控；该项已单列为“429 未完成”，不与业务失败或其他跳过重复统计。",
+                    }
+                ],
+            }
+        )
+    if case_count_mismatch:
+        planned = _known_case_count(planned_cases)
+        elements.append(
+            {
+                "tag": "note",
+                "elements": [
+                    {
+                        "tag": "plain_text",
+                        "content": (
+                            f"计划与实际不一致：计划执行 {planned} 条，"
+                            f"JUnit 实际生成 {total} 条。请检查用例收集、筛选条件或执行中断情况。"
+                        ),
                     }
                 ],
             }
@@ -543,6 +649,10 @@ def main() -> int:
         args.actor,
         args.commit,
         args.started_at,
+        args.suite,
+        args.suite_label,
+        args.planned_cases,
+        args.actual_cases,
     )
     payload = sign_payload(payload, os.getenv("LARK_WEBHOOK_SECRET", ""))
     try:

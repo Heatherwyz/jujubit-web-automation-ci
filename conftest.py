@@ -8,6 +8,15 @@
 def pytest_addoption(parser):
     """注册平台、报告、录像、购物车和人工确认相关参数。"""
     parser.addoption("--pw-platform", choices=("all", "pc", "h5"), default="all")
+    parser.addoption(
+        "--pw-cart-suite",
+        choices=("none", "smoke", "daily", "full"),
+        default="none",
+        help=(
+            "购物车套件选择：smoke、daily 或 full。daily 会精确保留 PC 全量 "
+            "和 H5 关键用例；默认 none 不改变 pytest 的普通收集范围。"
+        ),
+    )
     parser.addoption("--headed", action="store_true", default=False)
     parser.addoption("--base-url", default="https://jujubit.ai")
     parser.addoption("--pw-record-video", action="store_true", default=False)

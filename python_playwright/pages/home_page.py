@@ -4,6 +4,7 @@
 业务断言，定位器变化时也只需要修改这一处。
 """
 
+import re
 import time
 from typing import Optional
 from urllib.parse import urljoin, urlparse
@@ -386,6 +387,89 @@ class HomePage:
                     raise AssertionError("H5 菜单按钮点击后导航抽屉未展开")
                 self.open()
         return drawer_navigation
+
+    def click_unobstructed(self, locator: Locator, description: str) -> None:
+        """在元素内寻找真实可点击点，再用鼠标或触屏完成用户点击。
+
+        H5 抽屉顶部可能与固定 Header 局部重叠。Playwright 默认点击中心点时会被
+        Header 拦截，但链接下沿仍是用户可以点击的区域；这里通过
+        ``elementFromPoint`` 检查多个内缩点，只点击确实命中目标或其子元素的点。
+        若整个目标都被遮挡则明确失败，绝不使用 ``force=True`` 掩盖真实故障。
+        """
+        target = locator.first
+        target.wait_for(state="visible", timeout=10_000)
+        hit_test = target.evaluate(
+            """element => {
+                const rect = element.getBoundingClientRect();
+                if (rect.width <= 1 || rect.height <= 1) {
+                    return { point: null, blocker: '目标元素没有可点击尺寸' };
+                }
+
+                // 中心点优先；随后检查四角和 3×5 网格中的内缩点。网格足以
+                // 覆盖“上半部分被固定 Header 压住、下沿仍可点击”的移动端布局。
+                const fractions = [
+                    [0.5, 0.5],
+                    [0.12, 0.12], [0.88, 0.12],
+                    [0.12, 0.88], [0.88, 0.88],
+                    ...[0.2, 0.5, 0.8].flatMap(x =>
+                        [0.2, 0.35, 0.5, 0.65, 0.8].map(y => [x, y])
+                    ),
+                ];
+                const seen = new Set();
+                let blocker = '';
+                for (const [xFraction, yFraction] of fractions) {
+                    const x = Math.min(window.innerWidth - 1, Math.max(0,
+                        rect.left + rect.width * xFraction));
+                    const y = Math.min(window.innerHeight - 1, Math.max(0,
+                        rect.top + rect.height * yFraction));
+                    const key = `${Math.round(x)}:${Math.round(y)}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    const hit = document.elementFromPoint(x, y);
+                    if (hit && (hit === element || element.contains(hit))) {
+                        return { point: { x, y }, blocker: '' };
+                    }
+                    if (hit && !blocker) {
+                        blocker = hit.id
+                            ? `${hit.tagName.toLowerCase()}#${hit.id}`
+                            : `${hit.tagName.toLowerCase()}.${[...hit.classList].slice(0, 3).join('.')}`;
+                    }
+                }
+                return { point: null, blocker: blocker || '视口内没有命中元素的点' };
+            }"""
+        )
+        point = hit_test.get("point")
+        if not point:
+            raise AssertionError(
+                f"{description}无法真实点击：控件全部被遮挡；"
+                f"顶层元素={hit_test.get('blocker', '未知')}"
+            )
+
+        # H5 Context 配置了触屏能力；桌面端使用鼠标。点击后页面可能立即导航，
+        # 因此这里不再读取 DOM，避免把正常的 execution context 销毁当成失败。
+        has_touch = bool(self.page.evaluate("() => navigator.maxTouchPoints > 0"))
+        if has_touch:
+            self.page.touchscreen.tap(point["x"], point["y"])
+        else:
+            self.page.mouse.click(point["x"], point["y"])
+
+    def active_hero_cta(self) -> Locator:
+        """返回当前激活 Hero 轮播项中真正提供给用户点击的 CTA。"""
+        active_slide = self.page.get_by_role("region", name="Banner").locator(
+            "[data-banner-slide].is-active"
+        )
+        expect(active_slide).to_have_count(1)
+        # 主题的整张 slide 链接可能包含标题和 CTA，accessible name 并不等于
+        # 按钮文案；以明确的 CTA 标记和可见按钮文字锁定业务入口，避免误选
+        # 被标题覆盖的背景锚点。
+        cta_label = self.page.locator(".jjb-banner__btn:visible").filter(
+            has_text=re.compile(r"^\s*Create\s+Your\s+Own\s*$", re.I)
+        )
+        cta = active_slide.locator(
+            'a[data-gtm-item="hero-cta"]:visible'
+        ).filter(has=cta_label)
+        expect(cta).to_have_count(1)
+        return cta.first
 
     def mark_failure_evidence(self, locator: Locator, note: str) -> dict:
         """把问题元素滚动到视口、加红框，并保存报告所需的 DOM 路径。"""

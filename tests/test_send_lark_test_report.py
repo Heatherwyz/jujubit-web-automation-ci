@@ -9,6 +9,7 @@ from pathlib import Path
 
 from scripts.send_lark_test_report import (
     _format_started_at,
+    _suite_execution_lines,
     card_template,
     module_for_case,
     read_results,
@@ -186,6 +187,73 @@ class LarkReportTests(unittest.TestCase):
         self.assertIn("购物车", card_text)
         self.assertIn("https://github.example/run/1", card_text)
         self.assertIn("https://github.example/artifact/1", card_text)
+
+    def test_card_contains_suite_scope_and_actual_count(self) -> None:
+        """计划数与 JUnit 实际数不一致时不能显示绿色全部通过。"""
+        summary = {
+            "total": 20,
+            "passed": 20,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 0,
+            "rate_limited": 0,
+            "ordinary_skipped": 0,
+            "duration_seconds": 12,
+            "modules": [],
+        }
+        card = card_template(
+            summary,
+            suite="daily",
+            planned_cases="21",
+            actual_cases="20",
+        )
+        card_text = json.dumps(card, ensure_ascii=False)
+        self.assertIn("每日分层：PC 15 条 + H5 关键 6 条", card_text)
+        # 实际数以 XML summary.total 为准，不能被错误的工作流兜底值覆盖。
+        self.assertIn("计划 / 实际执行", card_text)
+        self.assertIn("21 条 / 20 条", card_text)
+        self.assertEqual(card["card"]["header"]["template"], "orange")
+        self.assertIn("计划与实际用例数不一致", card["card"]["header"]["title"]["content"])
+        self.assertIn("计划与实际不一致：计划执行 21 条，JUnit 实际生成 20 条", card_text)
+
+    def test_matching_planned_count_can_be_all_green(self) -> None:
+        """计划数与 JUnit 实际数相同时，全通过结果仍显示绿色。"""
+        summary = {
+            "total": 21,
+            "passed": 21,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 0,
+            "rate_limited": 0,
+            "ordinary_skipped": 0,
+            "duration_seconds": 12,
+            "modules": [],
+        }
+
+        card = card_template(summary, suite="daily", planned_cases="21")
+
+        self.assertEqual(card["card"]["header"]["template"], "green")
+        self.assertIn("全部通过", card["card"]["header"]["title"]["content"])
+
+    def test_zero_results_keeps_existing_empty_result_status(self) -> None:
+        """即使提供计划数，total=0 仍使用原有的未取得结果逻辑。"""
+        summary = {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 0,
+            "rate_limited": 0,
+            "ordinary_skipped": 0,
+            "duration_seconds": 0,
+            "modules": [],
+        }
+
+        card = card_template(summary, planned_cases="21")
+
+        self.assertEqual(card["card"]["header"]["template"], "orange")
+        self.assertIn("未取得测试结果", card["card"]["header"]["title"]["content"])
+        self.assertNotIn("计划与实际不一致", json.dumps(card, ensure_ascii=False))
 
     def test_started_at_keeps_cst_timezone_suffix(self) -> None:
         """GitHub 传入的 CST 不应被 ISO 时间分隔符替换逻辑破坏。"""

@@ -15,7 +15,10 @@ from html import escape
 import pytest
 from playwright.sync_api import sync_playwright
 
-from python_playwright.cart_cases import CART_CASES_BY_FUNCTION
+from python_playwright.cart_cases import (
+    CART_CASES_BY_FUNCTION,
+    DAILY_H5_CASE_FUNCTIONS,
+)
 from python_playwright.pages.home_page import HomePage, SiteRateLimitError
 
 
@@ -98,6 +101,97 @@ def pytest_generate_tests(metafunc):
     # 同一用例在 PC 与 H5 独立执行，保证响应式问题可单独定位。
     platforms = ("pc", "h5") if selected == "all" else (selected,)
     metafunc.parametrize("test_platform", platforms, ids=platforms, scope="function")
+
+
+def _item_function_name(item) -> str:
+    """返回 pytest item 对应的原始函数名，不依赖参数化后的显示名称。"""
+    return getattr(item, "originalname", None) or item.name.split("[")[0]
+
+
+def _item_platform(item) -> str:
+    """读取参数化平台；没有平台参数的测试返回空字符串。"""
+    callspec = getattr(item, "callspec", None)
+    params = getattr(callspec, "params", {}) if callspec is not None else {}
+    return str(params.get("test_platform", ""))
+
+
+def _daily_cart_item_is_selected(item) -> bool:
+    """判断每日购物车分层是否保留一条已参数化的购物车记录。
+
+    每日套件固定保留 PC 的 15 条逻辑用例，H5 只保留结构化清单中的 6
+    条关键用例。判断依据是 ``CART_CASES`` 的函数映射和 callspec 平台值，
+    不解析 nodeid，也不依赖容易随函数改名失效的 ``-k`` 字符串。
+    """
+    function_name = _item_function_name(item)
+    if function_name not in CART_CASES_BY_FUNCTION:
+        # Smoke 或首页等非 15 条逻辑购物车 case 由 -m 负责选择，不在这里误删。
+        return True
+    platform = _item_platform(item)
+    if platform == "pc":
+        return True
+    if platform == "h5":
+        return function_name in DAILY_H5_CASE_FUNCTIONS
+    # 未知平台不应被每日套件默默执行；保守地排除并在收集摘要中体现。
+    return False
+
+
+def _suite_display_name(config) -> str:
+    """返回报告/终端使用的中文套件名称。"""
+    suite = config.getoption("--pw-cart-suite")
+    return {
+        "none": "默认回归",
+        "smoke": "购物车 Smoke（单一主链路）",
+        "daily": "购物车每日分层（PC 15 + H5 关键 6）",
+        "full": "购物车完整回归（PC 15 + H5 15）",
+    }.get(suite, suite)
+
+
+def pytest_collection_modifyitems(config, items):
+    """按结构化平台/Case 清单筛选每日购物车记录。
+
+    ``pytest_generate_tests`` 先为每条 case 生成 PC/H5 参数；本 hook 再依据
+    ``--pw-cart-suite daily`` 删除不在每日层的 H5 记录。这样 pytest 收集结果
+    直接就是 21 条（而不是执行 30 条后再把 9 条伪装成跳过），同时保留
+    ``--pw-platform pc/h5`` 的显式平台约束。
+    """
+    suite = config.getoption("--pw-cart-suite")
+    config._jujubit_suite_name = _suite_display_name(config)
+    config._jujubit_daily_deselected = 0
+    if suite != "daily":
+        return
+
+    kept = []
+    deselected = []
+    for item in items:
+        # 只对真实 15 条结构化购物车 case 做每日分层；首页和 Smoke 由 -m
+        # 表达式控制，避免改变普通首页回归及兼容入口的语义。
+        if (
+            _item_function_name(item) in CART_CASES_BY_FUNCTION
+            and not item.get_closest_marker("cart_smoke")
+            and not _daily_cart_item_is_selected(item)
+        ):
+            deselected.append(item)
+        else:
+            kept.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+    items[:] = kept
+    # 最终收集数要等 -m/-k 等其它 pytest hook 完成后才能准确得到；这里仅记录
+    # 本 hook 实际排除的 9 条 H5 深度用例，pytest_collection_finish 再写最终数。
+    config._jujubit_daily_deselected = len(deselected)
+
+
+def pytest_collection_finish(session):
+    """记录 pytest 最终将执行的条数，供 HTML 和终端准确展示执行范围。"""
+    config = session.config
+    config._jujubit_suite_name = getattr(
+        config, "_jujubit_suite_name", _suite_display_name(config)
+    )
+    config._jujubit_collection_counts = {
+        "suite": config.getoption("--pw-cart-suite"),
+        "selected": len(session.items),
+        "deselected": getattr(config, "_jujubit_daily_deselected", 0),
+    }
 
 
 @pytest.fixture(scope="session")
@@ -279,8 +373,17 @@ def page(browser, cart_contexts, request, test_platform):
                 # 共享 Context 不会在每条 case 后自动删除成功录像，主动清理避免
                 # 完整回归把 30 条无用原始录像留到 Artifact。
                 video.delete()
-        except Exception:
-            pass
+        except Exception as error:
+            if failed:
+                _update_result(
+                    request.config,
+                    request.node.nodeid,
+                    video_error=str(error).replace("\n", " ")[:300],
+                )
+    # 失败页面已经截图、Page 已关闭且录像已经另存，此时清车不会再改写证据；
+    # fixture 返回前完成清理，下一条成功或失败用例仍从空购物车开始。
+    if is_cart_session:
+        _run_after_evidence_cleanups(request.node)
 
 
 def _artifact_dir(config) -> Path:
@@ -354,6 +457,25 @@ def _capture_cart_session_storage(page, config, platform: str) -> None:
     if not origin.startswith(("http://", "https://")) or not isinstance(entries, dict):
         return
     config._jujubit_cart_session_storage.setdefault(platform, {})[origin] = entries
+
+
+def _run_after_evidence_cleanups(node) -> None:
+    """在失败截图和录像保存完成后执行用例登记的幂等清理。
+
+    清理列表会先从节点上移除，确保 fixture 收尾即使被重复调用也不会二次清车。
+    清理本身不能覆盖原始业务失败或把已通过的用例改成 teardown error；下一条
+    用例仍会通过 ``ensure_empty_cart`` 再次确认服务端状态。
+    """
+    cleanups = getattr(node, "_jujubit_after_evidence_cleanups", ())
+    if hasattr(node, "_jujubit_after_evidence_cleanups"):
+        delattr(node, "_jujubit_after_evidence_cleanups")
+    for cleanup in cleanups:
+        try:
+            cleanup()
+        except Exception:
+            # CartPage 已使用 ignore_errors=True；这里再做最后防护，避免辅助清理
+            # 掩盖真正的断言结果。下一条 case 的前置检查仍会负责兜底清车。
+            pass
 
 
 def _artifact_stem(config, node) -> str:
@@ -534,6 +656,10 @@ def pytest_html_results_summary(prefix, summary, postfix, session):
     results = list(getattr(session.config, "_jujubit_results", {}).values())
     if not results:
         return
+    suite_name = getattr(session.config, "_jujubit_suite_name", "默认回归")
+    collection = getattr(session.config, "_jujubit_collection_counts", {})
+    selected_count = collection.get("selected", len(results))
+    deselected_count = collection.get("deselected", 0)
     # 报告首页直接输出中文明细，避免用户还要在 pytest-html 原始表格中筛选。
     passed = [item for item in results if item["outcome"] == "passed"]
     failed = [
@@ -636,6 +762,10 @@ def pytest_html_results_summary(prefix, summary, postfix, session):
                     f'<a target="_blank" rel="noopener" '
                     f'href="{escape(item["video"])}">播放错误视频</a>'
                 )
+            elif item.get("video_error"):
+                attachments.append(
+                    f"视频未生成：{escape(item['video_error'])}"
+                )
             else:
                 attachments.append("视频未生成")
             case_cell = (
@@ -655,6 +785,11 @@ def pytest_html_results_summary(prefix, summary, postfix, session):
         '.jujubit-summary th{background:#f3f5f8}.jujubit-summary td{vertical-align:top;word-break:break-word}'
         '.jujubit-summary code{white-space:normal;word-break:break-all}'
         '</style>'
+        f'<div class="jujubit-summary" style="padding:10px;background:#eef5ff;border:1px solid #b8d4ff">'
+        f'<strong>执行套件：</strong>{escape(str(suite_name))}；'
+        f'<strong>本次收集：</strong>{selected_count} 条'
+        + (f'（分层排除 {deselected_count} 条 H5 深度用例）' if deselected_count else "")
+        + '</div>'
         f'<h3>通过用例（{len(passed)}）</h3>'
         '<table class="jujubit-summary"><thead><tr><th>结果</th><th>用例</th></tr></thead><tbody>'
         f'{simple_rows(passed)}</tbody></table>'
@@ -739,6 +874,7 @@ def pytest_runtest_makereport(item, call):
             "outcome": result_outcome,
             "detail": _report_detail(report) if result_outcome != "passed" else previous.get("detail", ""),
             "video": previous.get("video", ""),
+            "video_error": previous.get("video_error", ""),
             "screenshot": previous.get("screenshot", ""),
             "screenshot_error": previous.get("screenshot_error", ""),
             "page_url": previous.get("page_url", ""),
@@ -778,7 +914,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     duration = f"{seconds // 60}分{seconds % 60}秒" if seconds >= 60 else f"{seconds}秒"
     started = datetime.fromtimestamp(config._jujubit_started_at).strftime("%Y/%m/%d %H:%M:%S")
     terminalreporter.write_sep("=", f"[JuJuBit UI Python] {'执行通过' if not failed else '执行失败'}")
-    terminalreporter.write_line(f"模式：全部 {len(results)} 条（真实生成）")
+    suite_name = getattr(config, "_jujubit_suite_name", "默认回归")
+    collection = getattr(config, "_jujubit_collection_counts", {})
+    selected_count = collection.get("selected", len(results))
+    deselected_count = collection.get("deselected", 0)
+    terminalreporter.write_line(f"执行套件：{suite_name}")
+    terminalreporter.write_line(
+        f"本次收集：{selected_count} 条"
+        + (f"（分层排除 {deselected_count} 条 H5 深度用例）" if deselected_count else "")
+    )
     terminalreporter.write_line(f"机器：{socket.gethostname()}")
     terminalreporter.write_line(f"开始：{started}")
     terminalreporter.write_line(f"耗时：{duration}")

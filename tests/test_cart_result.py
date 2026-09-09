@@ -127,6 +127,24 @@ class CartGeneratedResultTests(unittest.TestCase):
 
         self.assertFalse(loaded)
 
+    def test_model_renderer_snapshot_uses_linear_seen_traversal(self) -> None:
+        """3D DOM 快照遍历应避免重复展开 light DOM 子树。"""
+        # 这里走真实 Page.evaluate 分支；断言脚本结构，防止后续改动重新引入
+        # ``querySelectorAll('*')`` 与 ``element.children`` 的重复遍历。
+        page = Mock()
+        page.evaluate.return_value = True
+
+        loaded = self._cart(page)._generated_model_loaded()
+
+        self.assertTrue(loaded)
+        script = page.evaluate.call_args.args[0]
+        self.assertIn("const seen = new Set()", script)
+        self.assertIn(
+            "for (let index = 0; index < queue.length; index += 1)",
+            script,
+        )
+        self.assertNotIn("queue.push(...element.children);", script)
+
     def test_dom_click_requires_one_visible_enabled_uncovered_control(self) -> None:
         """CI 点击仍要经过唯一性、禁用态和遮挡检查，并发送真实输入事件。"""
         page = Mock()
@@ -153,6 +171,72 @@ class CartGeneratedResultTests(unittest.TestCase):
         self.assertEqual(params["exactText"], "Add to Cart")
         page.touchscreen.tap.assert_called_once_with(120, 240)
         page.mouse.click.assert_not_called()
+
+    def test_drawer_render_check_rejects_slide_animation_middle_frame(self) -> None:
+        """抽屉仅与视口相交还不够，右边缘贴齐后才算真正打开。"""
+        page = Mock()
+        page.evaluate.return_value = True
+        cart = self._cart(page)
+
+        self.assertTrue(cart._drawer_is_rendered())
+
+        script = page.evaluate.call_args.args[0]
+        self.assertIn("panel.getBoundingClientRect().right - innerWidth", script)
+        self.assertIn("Number(style.opacity || 1) <= 0.01", script)
+        self.assertIn("setAttribute(marker, 'true')", script)
+
+    def test_drawer_open_wait_requires_two_consecutive_stable_reads(self) -> None:
+        """稳定状态中断后重新计数，且两次有效读取必须跨过等待间隔。"""
+        page = Mock()
+        cart = self._cart(page)
+        cart._drawer_is_rendered = Mock(
+            side_effect=[False, True, False, True, True]
+        )
+
+        cart._wait_for_drawer_open(timeout=1_000)
+
+        self.assertEqual(cart._drawer_is_rendered.call_count, 5)
+        self.assertEqual(page.wait_for_timeout.call_count, 4)
+        page.wait_for_timeout.assert_called_with(200)
+
+    def test_history_total_reacquires_after_creator_redraw(self) -> None:
+        """首帧没有 History 时应重新定位，不能把 H5 重绘误报成失败。"""
+        page = Mock()
+        labels = Mock()
+        labels.all_inner_texts.side_effect = [[], ["History (2)", "History (5)"]]
+        page.get_by_text.return_value = labels
+        cart = self._cart(page)
+        cart._raise_if_rate_limited = Mock()
+
+        total = cart.history_total(timeout=1_000)
+
+        self.assertEqual(total, 5)
+        self.assertEqual(page.get_by_text.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(200)
+
+    def test_active_drawer_control_is_selected_in_click_dom_snapshot(self) -> None:
+        """活动抽屉选择和控件取坐标必须在同一次 evaluate 中完成。"""
+        page = Mock()
+        page.evaluate.return_value = {
+            "ok": True,
+            "matchCount": 1,
+            "x": 300,
+            "y": 400,
+            "coarsePointer": False,
+        }
+        cart = self._cart(page)
+
+        cart._click_visible_control(
+            cart._drawer_control_selector(".ccd-close"),
+            description="关闭半屏购物车",
+        )
+
+        page.evaluate.assert_called_once()
+        script = page.evaluate.call_args.args[0]
+        self.assertIn("const findActiveDrawer", script)
+        self.assertIn(".ccd.is-open", script)
+        self.assertIn("panel.getBoundingClientRect().right - innerWidth", script)
+        page.mouse.click.assert_called_once_with(300, 400)
 
     def test_desktop_control_uses_real_mouse_click(self) -> None:
         page = Mock()
@@ -468,6 +552,7 @@ class CartGeneratedResultTests(unittest.TestCase):
             "imageUrl": "https://cdn.jujubit.ai/generated/result.png",
         }
         cart = self._cart(page)
+        cart._refresh_active_drawer = Mock(return_value=True)
         cart.assert_drawer_cart = Mock()
 
         snapshot = cart.drawer_snapshot()
@@ -484,7 +569,7 @@ class CartGeneratedResultTests(unittest.TestCase):
         )
         cart.assert_drawer_cart.assert_called_once_with(2)
         script = page.evaluate.call_args.args[0]
-        self.assertIn("document.querySelectorAll('.ccd.is-open')", script)
+        self.assertIn("'[data-jujubit-active-drawer]'", script)
         self.assertIn("return {ready: true, ...data}", script)
 
     def test_drawer_snapshot_retries_during_component_redraw(self) -> None:
@@ -505,6 +590,7 @@ class CartGeneratedResultTests(unittest.TestCase):
             stable_state.copy(),
         ]
         cart = self._cart(page)
+        cart._refresh_active_drawer = Mock(return_value=True)
         cart.assert_drawer_cart = Mock()
 
         snapshot = cart.drawer_snapshot(expected_quantity=1)
@@ -556,6 +642,7 @@ class CartGeneratedResultTests(unittest.TestCase):
             },
         ]
         cart = self._cart(page)
+        cart._refresh_active_drawer = Mock(return_value=True)
         cart.assert_drawer_cart = Mock()
 
         snapshot = cart.drawer_snapshot(expected_quantity=2)
@@ -568,6 +655,65 @@ class CartGeneratedResultTests(unittest.TestCase):
         self.assertEqual(page.evaluate.call_count, 4)
         self.assertEqual(page.wait_for_timeout.call_count, 3)
 
+    def test_shipping_boundary_updates_only_the_active_drawer_host(self) -> None:
+        """边界造数不能命中旧 Portal，也不能由测试脚本强制打开抽屉。"""
+        page = Mock()
+        page.evaluate.return_value = {"ok": True}
+        cart = self._cart(page)
+        cart._refresh_active_drawer = Mock(return_value=True)
+
+        cart.set_shipping_boundary_total(9_899)
+
+        script, total = page.evaluate.call_args.args
+        self.assertEqual(total, 9_899)
+        self.assertIn("[data-jujubit-active-drawer]", script)
+        self.assertIn("closest('custom-cart-drawer')", script)
+        self.assertIn("host.updateShippingBar()", script)
+        self.assertNotIn("host.open()", script)
+
+    def test_shipping_boundary_retries_one_frame_after_portal_redraw(self) -> None:
+        """旧节点消失时重新读取活动抽屉，直到文案和进度属于同一帧。"""
+        page = Mock()
+        page.evaluate.side_effect = [
+            {"ready": False, "reason": "活动购物车半屏正在重绘"},
+            {
+                "ready": True,
+                "text": "Add $0.01 more to enjoy Free Shipping",
+                "width": 99.99,
+            },
+        ]
+        cart = self._cart(page)
+        cart._refresh_active_drawer = Mock(return_value=True)
+
+        cart.assert_shipping_boundary(9_899, timeout=1_000)
+
+        self.assertEqual(page.evaluate.call_count, 2)
+        self.assertEqual(cart._refresh_active_drawer.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(100)
+
+    def test_shipping_boundary_requires_full_progress_at_threshold(self) -> None:
+        """达到 99 美元时，文案和进度条必须同时更新才通过。"""
+        page = Mock()
+        page.evaluate.side_effect = [
+            {
+                "ready": True,
+                "text": "You've qualified for free standard shipping",
+                "width": 99.0,
+            },
+            {
+                "ready": True,
+                "text": "You've qualified for free standard shipping",
+                "width": 100.0,
+            },
+        ]
+        cart = self._cart(page)
+        cart._refresh_active_drawer = Mock(return_value=True)
+
+        cart.assert_shipping_boundary(9_900, timeout=1_000)
+
+        self.assertEqual(page.evaluate.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(100)
+
     def test_variant_comparison_ignores_dom_node_boundary_whitespace(self) -> None:
         """块级规格节点拼接时有无空格，都应视为同一用户可见文案。"""
         cart = self._cart(Mock())
@@ -576,6 +722,37 @@ class CartGeneratedResultTests(unittest.TestCase):
         actual = cart._text_without_whitespace("Size: 6cm Best FitCharacter: 1")
 
         self.assertEqual(actual, expected)
+
+    def test_failed_change_snapshot_retries_until_one_frame_is_stable(self) -> None:
+        """CART-15 的标题、金额、数量和图片应来自同一活动抽屉帧。"""
+        page = Mock()
+        stable = {
+            "ready": True,
+            "title": "JuJuBit Customized Figurine",
+            "variant": "Size: 6cm Best Fit",
+            "quantity": "1",
+            "subtotal": "$59.50",
+            "shipping": "Add $39.50 more to enjoy Free Shipping",
+            "checkout": "Checkout (1)",
+            "imageUrl": "https://cdn.jujubit.ai/generated/result.png",
+            "imageLoaded": True,
+        }
+        page.evaluate.side_effect = [
+            {"ready": False, "reason": "活动抽屉可见商品数量为 0"},
+            stable,
+            stable.copy(),
+        ]
+        cart = self._cart(page)
+        cart._refresh_active_drawer = Mock(return_value=True)
+
+        result = cart._wait_for_failed_change_snapshot(
+            expected_quantity=1,
+            timeout=1_000,
+        )
+
+        self.assertEqual(result["subtotal"], "$59.50")
+        self.assertEqual(page.evaluate.call_count, 3)
+        self.assertEqual(page.wait_for_timeout.call_count, 2)
 
 if __name__ == "__main__":
     unittest.main()

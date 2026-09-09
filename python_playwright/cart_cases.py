@@ -160,3 +160,20 @@ CART_CASES = (
 
 
 CART_CASES_BY_FUNCTION = {case.test_function: case for case in CART_CASES}
+
+# 每日回归在 H5 端只保留一组稳定且能覆盖主链路的关键用例。
+# 这里使用业务 Case ID，而不是把函数名散落在运行脚本或 shell 的 ``-k``
+# 表达式里；新增/改名时由结构化清单统一维护，pytest hook 再解析为函数名。
+DAILY_H5_CASE_IDS = frozenset(
+    {
+        "CART-01",  # Header Create 入口
+        "CART-02",  # 2D/3D 生成结果
+        "CART-03",  # Gallery 加购与半屏购物车
+        "CART-06",  # 全屏购物车 Checkout
+        "CART-10",  # 数量与金额联动
+        "CART-15",  # 失败请求状态保护
+    }
+)
+DAILY_H5_CASE_FUNCTIONS = frozenset(
+    case.test_function for case in CART_CASES if case.case_id in DAILY_H5_CASE_IDS
+)

@@ -115,10 +115,10 @@ Object，最后仍由 pytest 和 `run_all.py` 执行回归、生成报告。
 | 工作流 | 自动执行 | 手动入口 | 用途 |
 | --- | --- | --- | --- |
 | `JuJuBit 首页 UI Tests` | 每天北京时间 09:00 | **Actions → JuJuBit 首页 UI Tests → Run workflow** | 只执行首页 PC/H5 用例，不读取购物车登录态。 |
-| `JuJuBit 购物车 UI Tests` | 每天北京时间 10:00（完整回归） | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | 定时执行 `full`（15 条逻辑用例 / PC-H5 共 30 条记录）；手动可选择 `smoke`（1 条 PC 单上下文主链路）或 `full`。 |
+| `JuJuBit 购物车 UI Tests` | 周一至周六北京时间 10:00 执行 `daily`；周日北京时间 11:00 执行 `full` | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | `daily` 为 PC 全量 15 条 + H5 关键 6 条，共 21 条；周日 `full` 为 PC/H5 各 15 条，共 30 条；手动可选择 `smoke`、`daily` 或 `full`。 |
 
 两个工作流会共享同一个并发队列，不会同时从 GitHub Runner 访问站点。首页每天北京时间 09:00
-开始，购物车完整回归每天北京时间 10:00 开始；如果首页尚未结束，购物车会自动排队，随后再运行。
+开始，购物车周一至周六每日分层回归北京时间 10:00 开始，周日完整回归北京时间 11:00 开始；如果首页尚未结束，购物车会自动排队，随后再运行。
 两条工作流会分别发送“首页”和“购物车”的飞书结果卡片与独立 Artifact，这是为了让失败录像和模块统计更清晰。
 
 ### 第一次推送到 GitHub
@@ -176,14 +176,14 @@ gh secret set PLAYWRIGHT_STORAGE_STATE_JSON < artifacts/auth/storage-state.json
 
 也可以进入仓库的 **Settings → Secrets and variables → Actions → New repository secret**，
 名称填写 `PLAYWRIGHT_STORAGE_STATE_JSON`，内容粘贴完整 JSON。只有购物车工作流会在临时 Runner
-中还原为 `artifacts/auth/storage-state.json`，并按选择执行 Smoke 或完整购物车回归；该文件包含
+中还原为 `artifacts/auth/storage-state.json`，并按选择执行 Smoke、每日分层或完整购物车回归；该文件包含
 登录 Cookie，已被 `.gitignore` 排除，不能直接提交到 Git 仓库。登录态失效后重复上述步骤更新 Secret。
 
 ### 海外访问与 HTTP 429
 
 GitHub 托管 Runner 的出口地区和 IP 不保证固定，Shopify/WAF 可能返回 429 或人机验证。
-为降低购物车登录流量，项目会把每日首页任务与每日完整购物车回归分开、串行排队执行；
-手动 Smoke 只跑 PC，完整购物车 API 还会以 6 秒最小间隔访问，首次持续 429 后剩余购物车记录会直接标记
+为降低购物车登录流量，项目会把每日首页任务与每日购物车分层回归分开、串行排队执行；
+手动 Smoke 只跑 PC，每日和完整购物车 API 还会以 6 秒最小间隔访问，首次持续 429 后剩余购物车记录会直接标记
 为“429 未完成”，不会继续反复登录和撞站点。429 不计为页面功能失败，但表示该轮无法完成验收。
 
 工作流不会自动绕过 CAPTCHA；无人值守的 GitHub Job 也无法等待人工点击确认。若购物车工作流
@@ -218,6 +218,21 @@ RESULTS_XML=artifacts/runs/<时间戳>/results.xml \
 `python_playwright/tests/test_cart.py` 包含 15 个独立逻辑函数；每个函数按 PC/H5 参数化，
 完整执行会在报告中生成 30 条购物车记录。用例覆盖 Create、Gallery 的 2D/3D 结果、半屏与
 全屏购物车、Checkout、角标、数量与金额联动、包邮临界值、空态、视图一致性和失败请求保护。
+
+GitHub 周一至周六定时任务使用 `daily` 分层：PC 保留 15 条完整覆盖，H5 保留 CART-01、02、03、06、10、15
+六条关键主链路，共 21 条。H5 的其余 9 条深度兼容性用例不会被删除，周日由 `full` 自动覆盖，也可在发布前
+或页面改动后手动选择 `full` 执行。HTML 报告顶部会明确显示本次套件和收集数量，避免把未运行的深度用例
+误看成失败或跳过。
+
+本地可直接运行：
+
+```bash
+# 每日分层（21 条）
+.venv/bin/python run_all.py --cart-suite daily
+
+# 完整购物车回归（30 条）
+.venv/bin/python run_all.py --cart-suite full
+```
 
 只有 `CART-02` 会真实上传图片并发起生成；其余购物车用例独立清空购物车后复用账号 Gallery
 中已有的成功资产，不依赖前序用例遗留状态。默认测试图片来自 JuJuBit CDN，也可以通过

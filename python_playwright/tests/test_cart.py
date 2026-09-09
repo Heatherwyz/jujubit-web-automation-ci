@@ -29,9 +29,18 @@ def _isolated_cart(page, request, *, clear: bool = True):
     except (SiteRateLimitError, CartTestDataUnavailable) as error:
         pytest.skip(str(error))
     finally:
-        # 未通过前置清车或已经熔断时，不再补打一条清车请求。
+        # 不能在这里立刻清车：用例异常会先退出本 contextmanager，pytest 随后
+        # 才生成 call 报告并进入 page fixture 的截图/录像收尾。若此处直接调用
+        # cart/clear.js，失败证据记录到的就可能是清空后的状态，而非真实现场。
+        # 把幂等清理交给 page fixture，在截图落盘、Page 关闭且录像保存之后执行；
+        # fixture teardown 完成后 pytest 才会启动下一条用例，因此成功用例之间
+        # 仍然保持空购物车隔离。
         if clear and setup_completed and cart.cart_was_mutated:
-            cart.clear_cart(ignore_errors=True)
+            cleanups = getattr(request.node, "_jujubit_after_evidence_cleanups", None)
+            if cleanups is None:
+                cleanups = []
+                request.node._jujubit_after_evidence_cleanups = cleanups
+            cleanups.append(lambda: cart.clear_cart(ignore_errors=True))
 
 
 def _open_creator(cart: CartPage) -> None:
