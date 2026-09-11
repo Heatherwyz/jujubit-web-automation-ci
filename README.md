@@ -208,6 +208,17 @@ RESULTS_XML=artifacts/runs/<时间戳>/results.xml \
 `pytest-playwright.ini` 自动扫描 `python_playwright/tests/` 内所有名为
 `test_*.py` 的文件，再执行其中所有 `test_...` 函数。
 
+仓库里有两套 pytest 配置，对应两类用例：
+
+| 命令 | 配置 | 收集范围 | 是否访问线上站点 |
+| --- | --- | --- | --- |
+| `pytest` | `pyproject.toml` | `tests/` 离线单测 | 否 |
+| `run_all.py`（内部 `-c pytest-playwright.ini`） | `pytest-playwright.ini` | `python_playwright/tests/` UI 回归 | 是 |
+
+默认配置放在 `pyproject.toml` 且只指向 `tests/`，因此在仓库根目录裸跑 `pytest`
+不会误触发访问 jujubit.ai 的 UI 用例。两份配置都注册了 `cart_session`、
+`cart_smoke` 标记，新增标记时需同时更新。
+
 用例函数只要声明 `test_platform` 参数，`python_playwright/tests/conftest.py`
 内的 `pytest_generate_tests` 会自动生成 PC 和 H5 两条执行记录。因此新增 case
 通常只需：在对应模块的 `test_*.py` 中新增 `test_...` 函数，并在同文件夹的

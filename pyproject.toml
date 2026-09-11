@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+# 默认只收集 tests/ 下的离线单测，避免裸跑 pytest 时误触发访问线上站点的
+# python_playwright/tests。完整回归由 run_all.py 通过 -c pytest-playwright.ini 指定。
+addopts = "-ra"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "cart_session: 仅在登录状态文件存在时为购物车主流程加载该状态",
+    "cart_smoke: 单一登录上下文的低频购物车主链路；不计入完整 30 条回归",
+]
