@@ -36,7 +36,7 @@ CANONICAL_HOSTS = {"jujubit.ai", "www.jujubit.ai"}
 CANONICAL_HOST = "jujubit.ai"
 LINK_RE = re.compile(r"\[[^\]]*\]\((https?://[^)]+)\)")
 ASSET_PATH_RE = re.compile(
-    r"\.(?:avif|css|csv|gif|ico|jpeg?|js|json|map|mp[34]|pdf|png|svg|webm|webp|woff2?|zip)$",
+    r"\.(?:avif|css|csv|gif|ico|jpe?g|js|json|map|mp[34]|pdf|png|svg|webm|webp|woff2?|zip)$",
     re.IGNORECASE,
 )
 TRACKING_QUERY_KEYS = {
