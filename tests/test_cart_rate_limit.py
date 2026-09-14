@@ -208,6 +208,74 @@ class CartRateLimitTests(unittest.TestCase):
             )
 
 
+class _Resp429:
+    def __init__(self, url: str, status: int = 429):
+        self.url = url
+        self.status = status
+
+
+class RateLimitScopeTests(unittest.TestCase):
+    """只有业务请求的 429 才应熔断；静态资源被限流不影响购物车能否完成。
+
+    此前把 CDN 图片、字体、主题 CSS 的 429 一并计入，于是一张图片超限就能让
+    整条用例变成"未完成"，把真实的 UI/服务端不一致缺陷静默吞掉。
+    """
+
+    def _cart(self):
+        cart = object.__new__(CartPage)
+        cart.base_url = "https://jujubit.ai"
+        cart._rate_limited_urls = []
+        return cart
+
+    def _records(self, url: str) -> bool:
+        cart = self._cart()
+        cart._record_rate_limit(_Resp429(url))
+        return bool(cart._rate_limited_urls)
+
+    def test_cart_apis_still_trip_the_circuit(self) -> None:
+        """Shopify 购物车接口都以 .js 结尾，不能被静态资源规则误伤。"""
+        for url in (
+            "https://jujubit.ai/cart.js",
+            "https://jujubit.ai/cart/add.js",
+            "https://jujubit.ai/cart/change.js",
+            "https://jujubit.ai/cart/clear.js",
+        ):
+            self.assertTrue(self._records(url), url)
+
+    def test_business_documents_still_trip_the_circuit(self) -> None:
+        for url in (
+            "https://jujubit.ai/products/custom-figurine",
+            "https://jujubit.ai/checkout",
+            "https://jujubit.ai/apps/generate/api/create",
+        ):
+            self.assertTrue(self._records(url), url)
+
+    def test_static_assets_do_not_trip_the_circuit(self) -> None:
+        for url in (
+            "https://jujubit.ai/cdn/shop/files/a.png",
+            "https://jujubit.ai/assets/theme.css",
+            "https://jujubit.ai/assets/cart-drawer.js",
+            "https://jujubit.ai/assets/font.woff2",
+            "https://cdn.jujubit.ai/img/hero.jpg",
+            "https://jujubit.ai/files/banner.webp",
+        ):
+            self.assertFalse(self._records(url), url)
+
+    def test_analytics_ingest_remains_exempt(self) -> None:
+        self.assertFalse(
+            self._records(
+                "https://jujubit.ai/apps/monitor/api/collect/batch/add"
+            )
+        )
+
+    def test_non_429_and_third_party_are_ignored(self) -> None:
+        cart = self._cart()
+        cart._record_rate_limit(_Resp429("https://jujubit.ai/cart/add.js", status=200))
+        cart._record_rate_limit(_Resp429("https://example.com/cart/add.js"))
+
+        self.assertEqual(cart._rate_limited_urls, [])
+
+
 class CartCircuitCooldownTests(unittest.TestCase):
     """熔断冷却：一次瞬时 429 不能把整轮剩余用例全部标为未完成。"""
 

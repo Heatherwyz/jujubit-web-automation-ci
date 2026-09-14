@@ -95,6 +95,18 @@ class CartPage:
     # 成功；不能因此让后续购物车用例被全局熔断为“未完成”。路径精确匹配，
     # 避免把其它 Shopify App Proxy 的业务接口一并忽略。
     ANALYTICS_INGEST_PATHS = frozenset({"/apps/monitor/api/collect/batch/add"})
+    # 静态资源的 429 不影响用户完成购物车业务：图片、字体、CSS、JS 被限流时
+    # cart/add.js、cart/change.js 等业务请求仍可成功。此前把它们一并计入熔断，
+    # 于是一张 CDN 图片超限就能让整条用例（乃至整轮）变成“未完成”，把真实的
+    # UI/服务端不一致缺陷静默吞掉。只对业务文档与接口的 429 熔断。
+    # 注意不能按 .js 后缀判定：Shopify 的购物车业务接口正是 /cart/add.js、
+    # /cart/change.js、/cart.js，它们必须继续参与熔断。因此只按静态资源目录
+    # 前缀，以及明确不可能是接口的媒体/样式/字体后缀判定。
+    STATIC_ASSET_PATH_RE = re.compile(
+        r"\.(?:avif|css|eot|gif|ico|jpe?g|mp4|otf|png|svg|ttf|webm|webp|woff2?)$",
+        re.IGNORECASE,
+    )
+    STATIC_ASSET_PATH_PREFIXES = ("/cdn/", "/assets/", "/files/")
     ACTIVE_DRAWER_ATTRIBUTE = "data-jujubit-active-drawer"
     GENERATION_ERRORS = (
         "We couldn’t generate from this image. Please try a different one",
@@ -168,8 +180,17 @@ class CartPage:
             (host == base.hostname or host.endswith(".jujubit.ai"))
             and path != (base.path.rstrip("/") or "/")
             and path not in self.ANALYTICS_INGEST_PATHS
+            and not self._is_static_asset_path(path)
         ):
             self._rate_limited_urls.append(response.url)
+
+    @classmethod
+    def _is_static_asset_path(cls, path: str) -> bool:
+        """判断路径是否为静态资源；这类 429 不影响购物车业务是否可完成。"""
+        lowered = path.lower()
+        if lowered.startswith(cls.STATIC_ASSET_PATH_PREFIXES):
+            return True
+        return bool(cls.STATIC_ASSET_PATH_RE.search(lowered))
 
     def _raise_if_rate_limited(self) -> None:
         if not self._rate_limited_urls:
