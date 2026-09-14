@@ -1457,7 +1457,49 @@ class CartPage:
             self._drawer_control_selector(".ccd-close"),
             description="关闭半屏购物车",
         )
-        expect(self.drawer).not_to_be_visible()
+        # 不能用 expect(self.drawer).not_to_be_visible()：drawer 依赖
+        # _refresh_active_drawer 打的标记，标记失败时 locator 命中 0 个元素，
+        # 而 not_to_be_visible() 对 0 个元素恒真——抽屉仍开着也会静默通过。
+        # 改为直接检查真实的抽屉选择器，命中数必须归零。
+        self._assert_no_open_drawer()
+
+    def _open_drawer_count(self) -> int:
+        """已渲染的打开态抽屉数量，不依赖活动节点标记。
+
+        供否定式与条件式断言使用：``self.drawer`` 依赖标记，标记失败时命中 0 个
+        元素，会让 ``not_to_be_visible()`` 恒真、``is_visible()`` 恒假，从而静默
+        跳过本该执行的检查。
+        """
+        try:
+            return int(
+                self.page.evaluate(
+                    r"""() => {
+                        __IS_RENDERED__
+                        return [...document.querySelectorAll('.ccd.is-open')]
+                            .filter(isRendered).length;
+                    }""".replace("__IS_RENDERED__", IS_RENDERED_JS)
+                )
+            )
+        except PlaywrightError:
+            # Portal 重绘期间执行上下文可能短暂失效；按未打开处理，由调用方重试。
+            return 0
+
+    def _assert_no_open_drawer(self, timeout: int = 15_000) -> None:
+        """确认页面上不存在任何已渲染的打开态抽屉。
+
+        用页面内判定而不是 Playwright 的 :visible：Portal 会保留 :visible 仍能
+        命中的透明旧副本，同时必须避免依赖活动标记（标记缺失会让否定断言恒真）。
+        """
+        deadline = time.monotonic() + max(1, timeout) / 1_000
+        remaining = -1
+        while time.monotonic() < deadline:
+            remaining = self._open_drawer_count()
+            if remaining == 0:
+                return
+            self.page.wait_for_timeout(150)
+        raise AssertionError(
+            f"半屏购物车未在限定时间内关闭：仍有 {remaining} 个已渲染的打开态抽屉。"
+        )
 
     def drawer_snapshot(
         self, *, expected_quantity: Optional[int] = None
@@ -2142,7 +2184,17 @@ class CartPage:
             f"expected={expected_cart_quantity}, actual={actual_quantity}"
         )
         self.assert_header_badge(expected_cart_quantity)
-        if self.drawer.is_visible():
+        # self.drawer 依赖 _refresh_active_drawer 打的活动标记。标记失败时
+        # locator 命中 0 个元素，is_visible() 返回 False，下面整段 UI 一致性
+        # 检查会被静默跳过——而抽屉可能真的开着并显示错误数量，这正是本函数
+        # 要抓的缺陷。先用不依赖标记的真实选择器确认抽屉是否打开。
+        drawer_open = self._open_drawer_count() > 0
+        if drawer_open and not self.drawer.is_visible():
+            raise AssertionError(
+                "半屏购物车已打开但活动节点标记失败，无法核对其数量显示；"
+                "该状态不能视为通过。"
+            )
+        if drawer_open:
             if expected_cart_quantity == 0:
                 expect(self.drawer.locator(".ccd-item:visible")).to_have_count(0)
             else:
