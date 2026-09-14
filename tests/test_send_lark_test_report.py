@@ -10,6 +10,7 @@ from pathlib import Path
 from scripts.send_lark_test_report import (
     _format_started_at,
     _suite_execution_lines,
+    _validate_webhook_url,
     card_template,
     module_for_case,
     read_results,
@@ -284,6 +285,37 @@ class LarkReportTests(unittest.TestCase):
 
         self.assertEqual(card["card"]["header"]["template"], "red")
         self.assertIn("测试进程异常", card["card"]["header"]["title"]["content"])
+
+
+class WebhookUrlValidationTests(unittest.TestCase):
+    """报告正文含站点地址与失败详情，只允许发往飞书官方 HTTPS 域名。"""
+
+    def test_official_feishu_and_lark_hosts_are_accepted(self) -> None:
+        for url in (
+            "https://open.feishu.cn/open-apis/bot/v2/hook/abc-123",
+            "https://open.larksuite.com/open-apis/bot/v2/hook/abc-123",
+            "https://OPEN.FEISHU.CN/open-apis/bot/v2/hook/abc-123",
+        ):
+            self.assertEqual(_validate_webhook_url(url), url)
+
+    def test_non_https_scheme_is_rejected(self) -> None:
+        for url in (
+            "http://open.feishu.cn/open-apis/bot/v2/hook/abc",
+            "file:///etc/passwd",
+        ):
+            with self.assertRaisesRegex(RuntimeError, "https"):
+                _validate_webhook_url(url)
+
+    def test_third_party_and_internal_hosts_are_rejected(self) -> None:
+        """配错或被篡改的地址不能让脚本把报告 POST 到任意主机。"""
+        for url in (
+            "https://evil.example.com/hook",
+            "https://127.0.0.1:8080/hook",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://open.feishu.cn.evil.example.com/hook",
+        ):
+            with self.assertRaisesRegex(RuntimeError, "允许列表"):
+                _validate_webhook_url(url)
 
 
 if __name__ == "__main__":

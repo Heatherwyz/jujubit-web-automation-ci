@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import unittest
 from unittest.mock import patch
 
@@ -53,15 +54,20 @@ class _Pacer:
 
 
 class _Config:
-    def __init__(self, retries: int):
+    def __init__(self, retries: int, cooldown: float = 0.0):
         self.retries = retries
+        self.cooldown = cooldown
         self._jujubit_cart_pacer = _Pacer()
         self._jujubit_cart_rate_limited = ""
         self._jujubit_site_rate_limited = ""
+        self._jujubit_cart_rate_limited_at = None
+        self._jujubit_site_rate_limited_at = None
 
     def getoption(self, name: str):
         if name == "--pw-429-retries":
             return self.retries
+        if name == "--pw-429-cooldown":
+            return self.cooldown
         raise AssertionError(f"未预期读取配置项：{name}")
 
 
@@ -74,11 +80,11 @@ class _Home:
 class CartRateLimitTests(unittest.TestCase):
     """保证只对安全请求退避，并在持续 429 后停止后续访问。"""
 
-    def _cart(self, responses, *, retries: int = 1):
+    def _cart(self, responses, *, retries: int = 1, cooldown: float = 0.0):
         cart = object.__new__(CartPage)
         cart.page = _Page(responses)
         cart.base_url = "https://jujubit.ai"
-        cart.config = _Config(retries)
+        cart.config = _Config(retries, cooldown)
         cart.home = _Home()
         cart._rate_limited_urls = []
         return cart
@@ -200,6 +206,83 @@ class CartRateLimitTests(unittest.TestCase):
                 "https://jujubit.ai/cart/add.js",
                 operation="加购时",
             )
+
+
+class CartCircuitCooldownTests(unittest.TestCase):
+    """熔断冷却：一次瞬时 429 不能把整轮剩余用例全部标为未完成。"""
+
+    def _cart(self, responses, *, retries: int = 0, cooldown: float = 120.0):
+        cart = object.__new__(CartPage)
+        cart.page = _Page(responses)
+        cart.base_url = "https://jujubit.ai"
+        cart.config = _Config(retries, cooldown)
+        cart.home = _Home()
+        cart._rate_limited_urls = []
+        return cart
+
+    def test_circuit_still_blocks_requests_inside_cooldown_window(self) -> None:
+        """冷却未到时保持原有保护：不再向站点发新请求。"""
+        cart = self._cart([_Response(429), _Response(200)], cooldown=120.0)
+
+        with self.assertRaises(SiteRateLimitError):
+            cart.cart_json()
+        sent_before = len(cart.page.request.calls)
+
+        # 距熔断仅过去 5 秒，远小于 120 秒冷却，必须继续熔断。
+        cart.config._jujubit_cart_rate_limited_at = time.monotonic() - 5
+        with self.assertRaises(SiteRateLimitError):
+            cart.cart_json()
+        self.assertEqual(len(cart.page.request.calls), sent_before)
+
+    def test_circuit_half_opens_and_succeeds_after_cooldown_elapses(self) -> None:
+        """冷却结束且站点已恢复时，后续用例必须能真正执行。"""
+        cart = self._cart(
+            [_Response(429), _Response(200, payload={"item_count": 3})],
+            cooldown=120.0,
+        )
+
+        with self.assertRaises(SiteRateLimitError):
+            cart.cart_json()
+        self.assertNotEqual(cart.config._jujubit_cart_rate_limited, "")
+
+        # 冷却已过：半开放行一次真实请求，站点恢复后熔断状态被清空。
+        cart.config._jujubit_cart_rate_limited_at = time.monotonic() - 121
+        self.assertEqual(cart.cart_json()["item_count"], 3)
+        self.assertEqual(cart.config._jujubit_cart_rate_limited, "")
+        self.assertEqual(cart.config._jujubit_site_rate_limited, "")
+        self.assertEqual(cart._rate_limited_urls, [])
+
+    def test_half_open_probe_that_is_still_limited_reopens_and_restarts_clock(self) -> None:
+        """半开探测仍受限时必须重新熔断，并按新时刻重新计时。"""
+        cart = self._cart([_Response(429), _Response(429)], cooldown=120.0)
+
+        with self.assertRaises(SiteRateLimitError):
+            cart.cart_json()
+        opened_at = cart.config._jujubit_cart_rate_limited_at
+
+        cart.config._jujubit_cart_rate_limited_at = time.monotonic() - 200
+        with self.assertRaises(SiteRateLimitError):
+            cart.cart_json()
+
+        reopened_at = cart.config._jujubit_cart_rate_limited_at
+        self.assertNotEqual(cart.config._jujubit_cart_rate_limited, "")
+        self.assertIsNotNone(reopened_at)
+        # 新的熔断时刻必须晚于被人为回拨的 -200 秒，否则冷却永远立即到期。
+        self.assertGreater(reopened_at, time.monotonic() - 10)
+        self.assertIsNotNone(opened_at)
+
+    def test_cooldown_zero_preserves_permanent_circuit_behaviour(self) -> None:
+        """显式关闭冷却时保留旧语义：熔断后本轮不再恢复。"""
+        cart = self._cart([_Response(429), _Response(200)], cooldown=0.0)
+
+        with self.assertRaises(SiteRateLimitError):
+            cart.cart_json()
+        sent_before = len(cart.page.request.calls)
+
+        cart.config._jujubit_cart_rate_limited_at = time.monotonic() - 10_000
+        with self.assertRaises(SiteRateLimitError):
+            cart.cart_json()
+        self.assertEqual(len(cart.page.request.calls), sent_before)
 
 
 if __name__ == "__main__":

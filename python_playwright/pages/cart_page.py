@@ -156,18 +156,57 @@ class CartPage:
         raise SiteRateLimitError(reason)
 
     def _mark_rate_limited(self, reason: str) -> None:
-        """打开购物车专属及站点级熔断，阻止后续用例继续放大 429。"""
+        """打开购物车专属及站点级熔断，阻止后续用例继续放大 429。
+
+        熔断带冷却时间：记录开启时刻，冷却结束后由 ``_raise_if_circuit_open``
+        自动半开，让站点已经恢复时剩余用例还能真正执行。若不设冷却，一次瞬时
+        429 会把整轮剩余用例全部标成“未完成”。
+        """
         self.config._jujubit_cart_rate_limited = reason
         self.config._jujubit_site_rate_limited = reason
+        opened_at = time.monotonic()
+        self.config._jujubit_cart_rate_limited_at = opened_at
+        self.config._jujubit_site_rate_limited_at = opened_at
+
+    def _circuit_cooldown(self) -> float:
+        """熔断冷却秒数；<=0 表示保持旧行为，一旦熔断不再恢复。"""
+        try:
+            return max(0.0, float(self.config.getoption("--pw-429-cooldown")))
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
 
     def _raise_if_circuit_open(self) -> None:
-        """熔断后不再发送新的购物车请求。"""
+        """熔断且仍在冷却窗口内时不再发送新的购物车请求。"""
         reason = (
             getattr(self.config, "_jujubit_cart_rate_limited", "")
             or getattr(self.config, "_jujubit_site_rate_limited", "")
         )
-        if reason:
-            raise SiteRateLimitError(reason)
+        if not reason:
+            return
+        cooldown = self._circuit_cooldown()
+        opened_at = getattr(self.config, "_jujubit_cart_rate_limited_at", None)
+        if opened_at is None:
+            opened_at = getattr(self.config, "_jujubit_site_rate_limited_at", None)
+        if cooldown > 0 and opened_at is not None:
+            elapsed = time.monotonic() - opened_at
+            if elapsed >= cooldown:
+                # 半开：清掉熔断状态并放一次真实请求过去探测站点是否恢复。
+                # 若仍受限，请求路径会再次调用 _mark_rate_limited 重新计时。
+                print(
+                    f"站点频控熔断已冷却 {elapsed:.0f} 秒（阈值 {cooldown:g} 秒），"
+                    "本条用例将重新尝试访问站点。"
+                )
+                self._reset_rate_limit_circuit()
+                return
+        raise SiteRateLimitError(reason)
+
+    def _reset_rate_limit_circuit(self) -> None:
+        """清空熔断状态与本地 429 记录，供冷却后的半开探测使用。"""
+        self._rate_limited_urls.clear()
+        self.config._jujubit_cart_rate_limited = ""
+        self.config._jujubit_site_rate_limited = ""
+        self.config._jujubit_cart_rate_limited_at = None
+        self.config._jujubit_site_rate_limited_at = None
 
     def _pace_cart_request(self) -> None:
         """让购物车关键请求与上一条请求之间保留最小间隔。"""

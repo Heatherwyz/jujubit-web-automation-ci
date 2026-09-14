@@ -283,10 +283,7 @@ def page(browser, cart_contexts, request, test_platform):
         storage_issue = _storage_state_issue(storage_state)
         if storage_issue:
             pytest.skip(storage_issue)
-        rate_limit_reason = (
-            getattr(request.config, "_jujubit_cart_rate_limited", "")
-            or getattr(request.config, "_jujubit_site_rate_limited", "")
-        )
+        rate_limit_reason = _active_rate_limit_reason(request.config)
         if rate_limit_reason:
             pytest.skip(rate_limit_reason)
     if is_cart_session:
@@ -390,6 +387,39 @@ def _artifact_dir(config) -> Path:
     """返回本次执行的独立产物目录。"""
     configured = config.getoption("--pw-artifact-dir")
     return Path(configured) if configured else ROOT / "artifacts" / "latest"
+
+
+def _active_rate_limit_reason(config) -> str:
+    """返回仍在冷却窗口内的 429 熔断原因；已冷却则清空熔断并放行。
+
+    没有冷却时，一次瞬时 429 会让整轮剩余购物车用例全部 skip（历史上出现过
+    17/30、7/21）。冷却结束后允许下一条用例半开重试：站点已恢复就能真正执行，
+    仍受限则会在请求路径上重新熔断并重新计时。
+    """
+    reason = (
+        getattr(config, "_jujubit_cart_rate_limited", "")
+        or getattr(config, "_jujubit_site_rate_limited", "")
+    )
+    if not reason:
+        return ""
+    try:
+        cooldown = max(0.0, float(config.getoption("--pw-429-cooldown")))
+    except (AttributeError, ValueError):
+        cooldown = 0.0
+    if cooldown <= 0:
+        return reason
+    opened_at = getattr(config, "_jujubit_cart_rate_limited_at", None)
+    if opened_at is None:
+        opened_at = getattr(config, "_jujubit_site_rate_limited_at", None)
+    if opened_at is None:
+        return reason
+    if time.monotonic() - opened_at < cooldown:
+        return reason
+    config._jujubit_cart_rate_limited = ""
+    config._jujubit_site_rate_limited = ""
+    config._jujubit_cart_rate_limited_at = None
+    config._jujubit_site_rate_limited_at = None
+    return ""
 
 
 def _storage_state_issue(path: Path) -> str:
@@ -628,8 +658,12 @@ def pytest_configure(config):
     config._jujubit_site_pacer = shared_pacer
     config._jujubit_cart_pacer = shared_pacer
     # 429 熔断：首次持续受限后，不再让剩余购物车用例继续撞同一出口 IP。
+    # 熔断带冷却（--pw-429-cooldown），冷却结束后下一条用例会半开重试，
+    # 避免一次瞬时频控把整轮剩余用例全部标为“未完成”。
     config._jujubit_cart_rate_limited = ""
     config._jujubit_site_rate_limited = ""
+    config._jujubit_cart_rate_limited_at = None
+    config._jujubit_site_rate_limited_at = None
     config._jujubit_link_probe_cache = {}
     # 只在当前 pytest 进程内按平台/来源传递，不写入报告或 Artifact。
     config._jujubit_cart_session_storage = {}
@@ -913,7 +947,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     seconds = round(time.time() - config._jujubit_started_at)
     duration = f"{seconds // 60}分{seconds % 60}秒" if seconds >= 60 else f"{seconds}秒"
     started = datetime.fromtimestamp(config._jujubit_started_at).strftime("%Y/%m/%d %H:%M:%S")
-    terminalreporter.write_sep("=", f"[JuJuBit UI Python] {'执行通过' if not failed else '执行失败'}")
+    # 只看 failed 会把“17/30 未完成”也写成执行通过，掩盖真实覆盖率。
+    # 未完成的用例既不是通过也不是失败，必须单独显性化。
+    if failed:
+        verdict = "执行失败"
+    elif skipped:
+        verdict = f"执行完成但 {skipped}/{len(results)} 条未完成"
+    else:
+        verdict = "执行通过"
+    terminalreporter.write_sep("=", f"[JuJuBit UI Python] {verdict}")
     suite_name = getattr(config, "_jujubit_suite_name", "默认回归")
     collection = getattr(config, "_jujubit_collection_counts", {})
     selected_count = collection.get("selected", len(results))
@@ -927,6 +969,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     terminalreporter.write_line(f"开始：{started}")
     terminalreporter.write_line(f"耗时：{duration}")
     terminalreporter.write_line(f"结果：共 {len(results)}，通过 {passed}，失败 {failed}，跳过 {skipped}")
+    # 真实覆盖率 = 实际得出业务结论的用例 / 计划用例。跳过的用例没有验证任何
+    # 业务行为，把它们算进“通过率”会让报告看起来比实际可信。
+    if skipped:
+        executed = passed + failed
+        coverage = executed / len(results) * 100 if results else 0.0
+        terminalreporter.write_line(
+            f"有效覆盖：{coverage:.0f}%（{executed}/{len(results)} 条得出业务结论；"
+            f"{skipped} 条未完成，未验证任何业务行为）"
+        )
     terminalreporter.write_line("全部用例：")
     for item in results:
         terminalreporter.write_line(f"- [{RESULT_LABELS.get(item['outcome'], '⚠ 未知')}] [{item['platform']}] {item['title']}")

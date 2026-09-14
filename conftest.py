@@ -39,6 +39,15 @@ def pytest_addoption(parser):
         help="首页及可安全重复请求收到 HTTP 429 后的自动等待重试次数。",
     )
     parser.addoption(
+        "--pw-429-cooldown",
+        type=float,
+        default=120.0,
+        help=(
+            "429 熔断的冷却秒数。冷却结束后下一条用例会半开重试，避免一次瞬时"
+            "频控把整轮剩余用例全部标为未完成；设为 0 表示熔断后不再恢复。"
+        ),
+    )
+    parser.addoption(
         "--pw-link-request-interval",
         type=float,
         default=4.0,

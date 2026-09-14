@@ -19,7 +19,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from xml.etree import ElementTree
 
 
@@ -602,15 +603,57 @@ def sign_payload(payload: Dict[str, object], secret: str) -> Dict[str, object]:
     return signed
 
 
+# 自定义机器人 Webhook 只会挂在飞书/Lark 的官方域名下。限定 scheme 与 host
+# 后，配错或被篡改的 LARK_WEBHOOK_URL 无法让本脚本把测试报告（含站点地址、
+# 失败详情）POST 到任意第三方或内网地址。
+ALLOWED_WEBHOOK_HOSTS = (
+    "open.feishu.cn",
+    "open.larksuite.com",
+    "open.larkoffice.com",
+)
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """拒绝任何重定向，确保报告正文只发往已校验的飞书域名。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RuntimeError(
+            f"飞书 Webhook 返回了重定向（HTTP {code} -> {newurl}）；"
+            "为避免把测试报告投递到未校验的地址，已拒绝跟随。"
+        )
+
+
+def _validate_webhook_url(webhook_url: str) -> str:
+    """校验 Webhook 为 HTTPS 且指向飞书官方域名，避免请求被重定向到任意地址。"""
+    try:
+        parts = urlsplit(webhook_url)
+    except ValueError as error:
+        raise RuntimeError(f"LARK_WEBHOOK_URL 不是合法 URL：{error}") from error
+    if parts.scheme != "https":
+        raise RuntimeError(
+            f"LARK_WEBHOOK_URL 必须使用 https，当前为 {parts.scheme or '空'}。"
+        )
+    host = (parts.hostname or "").lower().rstrip(".")
+    if host not in ALLOWED_WEBHOOK_HOSTS:
+        raise RuntimeError(
+            "LARK_WEBHOOK_URL 的域名不在飞书官方允许列表内："
+            f"{host or '空'}；允许 {', '.join(ALLOWED_WEBHOOK_HOSTS)}。"
+        )
+    return webhook_url
+
+
 def post_to_lark(webhook_url: str, payload: Dict[str, object]) -> None:
     """发送 JSON 卡片，并检查飞书 HTTP 200 响应中的业务错误码。"""
     request = Request(
-        webhook_url,
+        _validate_webhook_url(webhook_url),
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    with urlopen(request, timeout=20) as response:
+    # 禁止跟随重定向：否则一个域名合规的 Webhook 仍可能把报告正文重定向投递到
+    # 内网或第三方地址。飞书自定义机器人正常不会返回 3xx。
+    opener = build_opener(_NoRedirect)
+    with opener.open(request, timeout=20) as response:
         body = response.read().decode("utf-8", errors="replace")
         if response.status >= 300:
             raise RuntimeError(f"飞书机器人返回 HTTP {response.status}")
