@@ -16,6 +16,7 @@ import json
 import re
 import socket
 import ssl
+import sys
 import threading
 import time
 from dataclasses import dataclass, asdict
@@ -30,6 +31,13 @@ from urllib.parse import (
     urlunsplit,
 )
 from urllib.request import Request, urlopen
+
+# 直接以脚本方式运行时 scripts/ 不在包路径上，因此按文件位置补一次仓库根目录。
+if __package__:
+    from scripts._metrics import percentile as _shared_percentile
+else:  # pragma: no cover - 仅在 python scripts/xxx.py 直接执行时走到
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts._metrics import percentile as _shared_percentile
 
 
 CANONICAL_HOSTS = {"jujubit.ai", "www.jujubit.ai"}
@@ -230,11 +238,9 @@ def probe(url: str, timeout: float) -> ProbeResult:
 
 
 def _percentile(values: Iterable[float], pct: float) -> float | None:
-    values = sorted(values)
-    if not values:
-        return None
-    index = min(len(values) - 1, round((len(values) - 1) * pct))
-    return round(values[index], 1)
+    """委托共用实现，保证与其他性能脚本得出同一个分位数。"""
+    result = _shared_percentile(values, pct)
+    return None if result is None else round(result, 1)
 
 
 def build_report(

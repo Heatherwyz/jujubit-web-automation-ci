@@ -26,6 +26,13 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
+# 直接以脚本方式运行时 scripts/ 不在包路径上，因此按文件位置补一次仓库根目录。
+if __package__:
+    from scripts._metrics import percentile as _shared_percentile
+else:  # pragma: no cover - 仅在 python scripts/xxx.py 直接执行时走到
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts._metrics import percentile as _shared_percentile
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATE = "2026-08-19"
@@ -134,12 +141,8 @@ def _integer(value: object) -> int | None:
 
 
 def _percentile(values: Iterable[float], percent: float) -> float | None:
-    """与巡检脚本一致地使用离散 P50/P95，避免小样本插值造成误读。"""
-    ordered = sorted(values)
-    if not ordered:
-        return None
-    index = min(len(ordered) - 1, round((len(ordered) - 1) * percent))
-    return ordered[index]
+    """委托共用实现，保证与采集脚本对同一批数据得出同一个分位数。"""
+    return _shared_percentile(values, percent)
 
 
 def _format_ms(value: float | None, decimals: int = 0) -> str:

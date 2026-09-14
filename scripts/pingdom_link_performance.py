@@ -16,7 +16,6 @@ import argparse
 import datetime as dt
 import http.cookiejar
 import json
-import math
 import re
 import sys
 import time
@@ -27,6 +26,13 @@ from typing import Any, Callable, Iterable, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+
+# 直接以脚本方式运行时 scripts/ 不在包路径上，因此按文件位置补一次仓库根目录。
+if __package__:
+    from scripts._metrics import percentile as _shared_percentile
+else:  # pragma: no cover - 仅在 python scripts/xxx.py 直接执行时走到
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts._metrics import percentile as _shared_percentile
 
 
 PINGDOM_BASE_URL = "https://tools.pingdom.com"
@@ -520,11 +526,15 @@ def run_test(
 
 
 def _percentile(values: Iterable[int], percentile: float) -> int | None:
-    ordered = sorted(values)
-    if not ordered:
-        return None
-    index = min(len(ordered) - 1, math.ceil(len(ordered) * percentile) - 1)
-    return ordered[index]
+    """委托共用实现。
+
+    原先用上取整秩 ``math.ceil(n*p)-1``，而汇总脚本
+    ``generate_website_performance_report`` 对同一批 Pingdom 数据用最近秩，
+    导致同一个 P95 出现两个数字（n=115 递增样本：11000 ms 与 10900 ms）。
+    统一为最近秩；历史报告中的 P95 可能因此下移一个样本位。
+    """
+    result = _shared_percentile(values, percentile)
+    return None if result is None else int(result)
 
 
 def _format_bytes(value: int | None) -> str:
