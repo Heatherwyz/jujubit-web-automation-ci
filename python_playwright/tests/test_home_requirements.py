@@ -38,7 +38,12 @@ EXPECTED_SOCIAL_PLATFORMS = (
 
 
 def _assert_destination_is_usable(page, response, href):
-    """检查真实点击后的响应、错误页标记和主内容，避免把有正文的 404 当成通过。"""
+    """检查真实点击后的响应、错误页标记和主内容，避免把有正文的 404 当成通过。
+
+    ``response`` 由调用方通过监听主文档响应取得。此前唯一调用点硬编码传 None，
+    这段状态码断言从未执行过，于是 Shopify 的软 404（返回 404 却渲染完整 main
+    与导航）能直接通过——正文非空、无错误标记，三项检查都拦不住。
+    """
     if response is not None:
         assert response.status < 400, f"点击后返回 HTTP {response.status}：{href}"
     page.locator("main").wait_for(state="visible", timeout=15_000)
@@ -133,13 +138,31 @@ def _click_and_check_destination(home, page, link):
     assert href and href != "#", "实际配置的链接不能为空"
     before_url = page.url
     target_path = urlparse(href).path or "/"
-    # 部分 Shopify 入口通过 history API 或重定向完成跳转，不一定触发 expect_navigation 事件。
-    home.click_unobstructed(link, "首页链接")
-    page.wait_for_function(
-        """({ before, path }) => location.href !== before && location.pathname === path""",
-        arg={"before": before_url, "path": target_path},
-        timeout=30_000,
-    )
+    # 收集目标路径的主文档响应，供状态码断言使用。软 404 只能靠状态码识别：
+    # 它会渲染完整 main 与导航，正文非空且没有错误页文案。
+    document_responses: list = []
+
+    def _capture_document(response) -> None:
+        try:
+            if response.request.resource_type != "document":
+                return
+            if urlparse(response.url).path.rstrip("/") == target_path.rstrip("/"):
+                document_responses.append(response)
+        except PlaywrightError:
+            # 响应对象可能随导航失效；丢弃即可，不影响后续结构断言。
+            pass
+
+    page.on("response", _capture_document)
+    try:
+        # 部分 Shopify 入口通过 history API 或重定向完成跳转，不一定触发 expect_navigation 事件。
+        home.click_unobstructed(link, "首页链接")
+        page.wait_for_function(
+            """({ before, path }) => location.href !== before && location.pathname === path""",
+            arg={"before": before_url, "path": target_path},
+            timeout=30_000,
+        )
+    finally:
+        page.remove_listener("response", _capture_document)
     # URL 已经变成目标路径后，页面可能仍有 Shopify/第三方长连接继续占用
     # 导航生命周期；此时重新等待一次 domcontentloaded 偶发拿不到对应事件。
     # 最终是否可用由下面的可见 <main>、正文和错误页标记直接验收即可。
@@ -148,7 +171,11 @@ def _click_and_check_destination(home, page, link):
     _skip_if_site_verification_blocks_page(page, href)
     # 落地页若再次出现优惠弹窗，也先关闭再检查页面内容。
     home.close_welcome_popup()
-    _assert_destination_is_usable(page, None, href)
+    # 取最后一次主文档响应（可能经过重定向）；history API 跳转拿不到时传 None，
+    # 退化为原有的结构断言，不会因此误报。
+    _assert_destination_is_usable(
+        page, document_responses[-1] if document_responses else None, href
+    )
 
 
 def test_homepage_seo_metadata(home, page, test_platform):
