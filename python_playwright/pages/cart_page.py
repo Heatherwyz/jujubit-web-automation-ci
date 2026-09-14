@@ -17,6 +17,33 @@ from playwright.sync_api import (
 from python_playwright.pages.home_page import HomePage, SiteRateLimitError
 
 
+# 页面内可见性判定的唯一实现，供所有注入脚本共用。
+#
+# 必须向上遍历祖先：display:none 与 visibility:hidden 会被浏览器继承到子元素的
+# computed style，但 opacity 不会——父元素 opacity:0 时子元素自身仍是 1。此前有
+# 三份副本，其中两份只检查元素自身，会把父级 opacity:0 之下完全不可见的按钮判为
+# 可点击（用最小 DOM 验证过 5 个场景中 3 个判定相反）。
+#
+# 阈值说明：宽高 > 1px 排除塌陷占位；opacity <= 0.01 视为不可见，避免主题用
+# 极小 opacity 做淡入动画时把过渡中间态当成已就绪。
+IS_RENDERED_JS = """
+    const isRendered = element => {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        if (!(rect.width > 1 && rect.height > 1)) return false;
+        for (let node = element; node; node = node.parentElement) {
+            const style = getComputedStyle(node);
+            if (style.display === 'none'
+                || style.visibility === 'hidden'
+                || Number(style.opacity || 1) <= 0.01) {
+                return false;
+            }
+        }
+        return true;
+    };
+"""
+
+
 @dataclass(frozen=True)
 class GeneratedResult:
     """本次新生成并已在 Gallery 展示的结果。"""
@@ -812,20 +839,7 @@ class CartPage:
                     // “已渲染”和“当前位于视口”是两件事。Creator 的 2D/3D、
                     // Add to Cart 经常位于首屏之外，必须先找到已渲染控件，
                     // scrollIntoView 后再检查遮挡；否则正常控件会被误报为 0 个。
-                    const isRendered = element => {
-                        if (!element) return false;
-                        const rect = element.getBoundingClientRect();
-                        if (!(rect.width > 1 && rect.height > 1)) return false;
-                        for (let node = element; node; node = node.parentElement) {
-                            const style = getComputedStyle(node);
-                            if (style.display === 'none'
-                                || style.visibility === 'hidden'
-                                || Number(style.opacity || 1) <= 0.01) {
-                                return false;
-                            }
-                        }
-                        return true;
-                    };
+                    __IS_RENDERED__
                     const isInViewport = element => {
                         if (!isRendered(element)) return false;
                         const rect = element.getBoundingClientRect();
@@ -933,7 +947,7 @@ class CartPage:
                         y,
                         coarsePointer: matchMedia('(pointer: coarse)').matches,
                     };
-                }""",
+                }""".replace("__IS_RENDERED__", IS_RENDERED_JS),
                     params,
                 )
                 # 0 个候选通常是 Portal 的短暂卸载；reacquire 则表示刚完成
@@ -1334,14 +1348,7 @@ class CartPage:
             try:
                 state = self.page.evaluate(
                     r"""() => {
-                        const isRendered = element => {
-                            const style = getComputedStyle(element);
-                            const rect = element.getBoundingClientRect();
-                            return style.display !== 'none'
-                                && style.visibility !== 'hidden'
-                                && Number(style.opacity || 1) > 0
-                                && rect.width > 1 && rect.height > 1;
-                        };
+                        __IS_RENDERED__
                         const roots = [...document.querySelectorAll(
                             '[data-jujubit-active-drawer]'
                         )].filter(isRendered);
@@ -1356,7 +1363,7 @@ class CartPage:
                             return {ready: false, reason: '当前数量输入框不可编辑'};
                         }
                         return {ready: true};
-                    }"""
+                    }""".replace("__IS_RENDERED__", IS_RENDERED_JS)
                 )
             except PlaywrightError:
                 state = {"ready": False, "reason": "抽屉正在重绘"}
@@ -1468,15 +1475,7 @@ class CartPage:
             self._refresh_active_drawer()
             state = self.page.evaluate(
                 r"""() => {
-                    const isRendered = element => {
-                        const style = getComputedStyle(element);
-                        const rect = element.getBoundingClientRect();
-                        return style.display !== 'none'
-                            && style.visibility !== 'hidden'
-                            && Number(style.opacity || 1) > 0
-                            && rect.width > 1
-                            && rect.height > 1;
-                    };
+                    __IS_RENDERED__
                     const roots = [...document.querySelectorAll(
                         '[data-jujubit-active-drawer]'
                     )].filter(isRendered);
@@ -1523,7 +1522,7 @@ class CartPage:
                         };
                     }
                     return {ready: true, ...data};
-                }"""
+                }""".replace("__IS_RENDERED__", IS_RENDERED_JS)
             )
             last_state = state or {}
             if last_state.get("ready"):
