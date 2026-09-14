@@ -22,6 +22,27 @@ class SiteRateLimitError(RuntimeError):
     """站点返回 HTTP 429，当前用例无法完成业务校验。"""
 
 
+# 判断一段失败详情是否属于站点频控。429 必须与 HTTP 语义相邻：裸数字会误判，
+# 因为 traceback 里出现 429 行号（cart_page.py 有 2500+ 行）、
+# "Timeout 30000ms exceeded ... at cart_page.py:1429"、"assert 429 == 430"
+# 都是完全正常的失败内容。误判代价特别高——conftest 会把 detail 整段替换成
+# 频控说明，原始错误信息直接丢失，报告里再也看不到真实失败原因。
+RATE_LIMIT_DETAIL_PATTERN = re.compile(
+    r"""
+      http\s*/?\d*(?:\.\d+)?\s*429\b
+    | \b429\s*(?:too\s+many\s+requests|frequency|rate)
+    | (?:status(?:_code)?|code|响应|返回)\s*[=:：]?\s*429\b
+    | \b429\s*=\s*[^\n]{0,100}?\.status\b
+    | 访问频控
+    | 频率限制
+    | rate[ _-]?limit(?:ed|ing)?
+    | too\s+many\s+requests
+    | retry[- ]after
+    """,
+    re.I | re.X,
+)
+
+
 class HomePage:
     """JuJuBit 首页的可复用操作集合。"""
 

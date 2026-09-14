@@ -19,7 +19,11 @@ from python_playwright.cart_cases import (
     CART_CASES_BY_FUNCTION,
     DAILY_H5_CASE_FUNCTIONS,
 )
-from python_playwright.pages.home_page import HomePage, SiteRateLimitError
+from python_playwright.pages.home_page import (
+    RATE_LIMIT_DETAIL_PATTERN,
+    HomePage,
+    SiteRateLimitError,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -962,9 +966,16 @@ def pytest_runtest_makereport(item, call):
 
 
 def _report_detail(report) -> str:
-    """把 pytest 的长错误压缩成报告中可读的一行。"""
+    """把 pytest 的长错误压缩成报告中可读的一行。
+
+    频控判定复用 home_page.RATE_LIMIT_DETAIL_PATTERN。原先用
+    ``(?:http\\s*)?429`` 匹配，http 前缀可选，于是裸的 429 三个数字就命中：
+    "Timeout 30000ms exceeded ... at cart_page.py:1429"、"元素宽 429px"、
+    "assert 429 == 430"、"home_page.py:429: in click_unobstructed" 全部误判。
+    误判后 detail 被整段替换成频控说明，真实错误信息完全丢失。
+    """
     detail = str(report.longrepr).replace("\n", " ").strip()
-    if re.search(r"(?:http\s*)?429|访问频控|rate[ -]?limit", detail, re.I):
+    if RATE_LIMIT_DETAIL_PATTERN.search(detail):
         return (
             "站点访问频控（HTTP 429）：本条用例未能执行，不代表页面功能失败。"
             "脚本已自动限速并重试；仍持续出现时请稍后重跑，或使用 "
