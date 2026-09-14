@@ -317,6 +317,32 @@ def check_faq_ssr(html: str) -> list[str]:
     return []
 
 
+def check_social_videos(html: str) -> list[str]:
+    """社交视频版块必须存在，且每个 video 满足静音/内联/循环属性。
+
+    浏览器层的 REQ-08 在 ``videos.count() == 0`` 时 pytest.skip("当前页面未配置
+    视频")。需求要求这个版块存在，所以整块被误删时那条用例会显示"跳过"而不是
+    失败——正是"通过率高但没测到"的形态。这里改为缺失即报错。
+
+    属性用 HTML 布尔属性语义判断：``muted``、``playsinline``、``loop`` 只要出现
+    即生效，值可以是空串、"muted" 或 "true"。
+    """
+    videos = re.findall(r"<video\b[^>]*>", html, re.I)
+    if not videos:
+        return ["服务端 HTML 中没有 video 元素（社交视频版块可能被删除）"]
+    problems: list[str] = []
+    for index, tag in enumerate(videos, start=1):
+        lowered = tag.lower()
+        missing = [
+            name
+            for name in ("muted", "playsinline", "loop")
+            if not re.search(rf"\b{name}\b", lowered)
+        ]
+        if missing:
+            problems.append(f"第 {index} 个 video 缺少属性：" + "、".join(missing))
+    return problems
+
+
 def check_logo_accessible_name(html: str) -> list[str]:
     """指向首页的品牌 Logo 必须有无障碍名称，供读屏器识别。
 
@@ -406,6 +432,7 @@ HOME_HTML_CONTRACTS = (
     ("品类入口地址", check_category_anchors),
     ("核心版块文案", check_core_sections),
     ("FAQ 服务端渲染", check_faq_ssr),
+    ("社交视频属性", check_social_videos),
     ("Logo 无障碍名称", check_logo_accessible_name),
     ("FAQ 结构化数据", check_json_ld_faq_matches_ssr),
 )

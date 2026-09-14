@@ -22,6 +22,7 @@ from python_playwright.home_contract import (
     check_logo_accessible_name,
     check_navigation_anchors,
     check_seo_metadata,
+    check_social_videos,
 )
 
 FAQ_SECTION = """
@@ -72,6 +73,11 @@ def compliant_html(**overrides) -> str:
         ),
         "sections": "<h2>Pick Your Style</h2><h2>How It Works</h2>",
         "faq": FAQ_SECTION,
+        # 线上写法：布尔属性带值（playsinline="true" loop="loop" muted="muted"）。
+        "videos": (
+            '<video playsinline="true" loop="loop" muted="muted" '
+            'class="jjb-social-media__video" preload="metadata"></video>'
+        ),
         "json_ld": JSON_LD,
     }
     parts.update(overrides)
@@ -80,7 +86,7 @@ def compliant_html(**overrides) -> str:
         f"{parts['title']}{parts['description']}{parts['json_ld']}"
         "</head><body>"
         f"{parts['logo']}{parts['nav']}{parts['categories']}"
-        f"{parts['h1']}{parts['sections']}{parts['faq']}"
+        f"{parts['h1']}{parts['sections']}{parts['faq']}{parts['videos']}"
         "</body></html>"
     )
 
@@ -219,6 +225,60 @@ class SectionAndFaqTests(unittest.TestCase):
         problems = check_faq_ssr(html)
 
         self.assertTrue(any("为空" in item for item in problems))
+
+
+class SocialVideoTests(unittest.TestCase):
+    """浏览器层在没有 video 时会 pytest.skip；契约层必须把缺失判为失败。"""
+
+    def test_compliant_videos_pass(self) -> None:
+        self.assertEqual(check_social_videos(compliant_html()), [])
+
+    def test_missing_video_section_is_reported(self) -> None:
+        """版块整块被删时不能显示"跳过"，必须是失败。"""
+        problems = check_social_videos(compliant_html(videos=""))
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("没有 video 元素", problems[0])
+
+    def test_valueless_boolean_attributes_are_accepted(self) -> None:
+        """HTML 布尔属性只要出现即生效，不要求带值。"""
+        html = compliant_html(videos="<video muted playsinline loop></video>")
+
+        self.assertEqual(check_social_videos(html), [])
+
+    def test_missing_muted_is_reported(self) -> None:
+        """自动播放的视频必须静音，否则移动端会被浏览器阻止播放。"""
+        html = compliant_html(
+            videos='<video playsinline="true" loop="loop"></video>'
+        )
+
+        problems = check_social_videos(html)
+
+        self.assertTrue(any("muted" in item for item in problems))
+
+    def test_missing_playsinline_and_loop_are_both_reported(self) -> None:
+        html = compliant_html(videos='<video muted="muted"></video>')
+
+        problems = check_social_videos(html)
+
+        self.assertTrue(any("playsinline" in item for item in problems))
+        self.assertTrue(any("loop" in item for item in problems))
+
+    def test_each_offending_video_is_reported_separately(self) -> None:
+        """一个视频有问题不能掩盖其他视频的同类问题。"""
+        html = compliant_html(
+            videos=(
+                '<video muted playsinline loop></video>'
+                "<video></video>"
+                '<video muted playsinline></video>'
+            )
+        )
+
+        problems = check_social_videos(html)
+
+        self.assertEqual(len(problems), 2)
+        self.assertIn("第 2 个", problems[0])
+        self.assertIn("第 3 个", problems[1])
 
 
 class LogoAndStructuredDataTests(unittest.TestCase):

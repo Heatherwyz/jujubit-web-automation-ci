@@ -74,8 +74,8 @@ artifacts/runs/<时间戳>/jujubit-report-<时间戳>.html
 
 | 层 | 位置 | 依赖 | 条数 | 耗时 | 期望状态 |
 | --- | --- | --- | --- | --- | --- |
-| 离线单测 | `tests/` | 无（不联网） | 175 | < 1 秒 | 硬性全绿 |
-| 服务端 HTML 契约 | `python_playwright/tests/test_home_html_contract.py` | 一次 HTTP 请求 | 8 | 约 2 秒 | 硬性全绿 |
+| 离线单测 | `tests/` | 无（不联网） | 231 | < 2 秒 | 硬性全绿 |
+| 服务端 HTML 契约 | `python_playwright/tests/test_home_html_contract.py` | 一次 HTTP 请求 | 9 | 约 2 秒 | 硬性全绿 |
 | 浏览器 UI 回归 | `test_home*.py`、`test_cart.py` | 浏览器 + 登录态 + 公网 | 94 | 数分钟 | 允许环境噪声 |
 
 **离线单测**验证框架自身逻辑：契约规则、429 退避与熔断冷却、报告口径、飞书卡片
@@ -83,16 +83,20 @@ artifacts/runs/<时间戳>/jujubit-report-<时间戳>.html
 
 **服务端 HTML 契约层**只取一次首页原始 HTML，不启动浏览器、不分 PC/H5（同一份
 HTML 两端相同）。它回答"不执行 JavaScript 的 HTML 是否包含约定内容"——SEO 元数据、
-唯一 H1、导航与品类真实锚点、核心版块标题、FAQ 服务端渲染与结构化数据一致性。
-没有渲染时序、视口差异和登录态，结论确定：
+唯一 H1、导航与品类真实锚点、核心版块标题、FAQ 服务端渲染、社交视频播放属性、
+Logo 无障碍名称、FAQ 结构化数据一致性。没有渲染时序、视口差异和登录态，结论确定：
 
 ```bash
 .venv/bin/python -m pytest -c pytest-playwright.ini -m html_contract -q
 ```
 
-判定规则集中在 `python_playwright/home_contract.py`，由 31 条离线单测逐条覆盖。
+判定规则集中在 `python_playwright/home_contract.py`，由 37 条离线单测逐条覆盖。
 浏览器层复用同一份规则和期望值常量，不再各写一遍——历史上两处分别维护时，
 `EXPECTED_LOGO_ALT` 曾长期是一个全站出现 0 次的字符串。
+
+契约层还承担一个作用：把浏览器层"没有就跳过"的前置条件变成硬断言。REQ-08 在
+`videos.count() == 0` 时会 `pytest.skip("当前页面未配置视频")`，整个社交视频版块
+被误删时它显示"跳过"而不是失败；契约层的「社交视频属性」会直接报错。
 
 **浏览器 UI 回归**才需要真实点击、可见性与遮挡判断、购物车登录态。这一层会受
 频控、人机验证和主题异步初始化影响，失败时先看是不是"未完成"（见下方报告口径）。
