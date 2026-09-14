@@ -260,9 +260,20 @@ def read_results(results_xml: str) -> Dict[str, Any]:
 def _business_failures(summary: Dict[str, Any]) -> int:
     """从失败与错误中剔除已确认的 HTTP 429 访问频控。"""
     failed_or_error = int(summary.get("failed", 0)) + int(summary.get("errors", 0))
-    rate_limited_failures = int(
-        summary.get("rate_limited_failures", summary.get("rate_limited", 0))
-    )
+    if "rate_limited_failures" in summary:
+        rate_limited_failures = int(summary["rate_limited_failures"])
+    else:
+        # 旧报告没有细分字段。此时不能直接拿 rate_limited 相减：429 多数表现为
+        # skipped，rate_limited 会远大于失败数（如 1 失败 - 17 频控 = 0），
+        # 真实业务失败会被静默清零，卡片还会从红降级成橙。改为先扣除已知的
+        # 429 跳过数，剩下的才可能是以 failure 形式记录的频控。
+        rate_limited = int(summary.get("rate_limited", 0))
+        rate_limited_skipped = summary.get("rate_limited_skipped")
+        if rate_limited_skipped is None:
+            rate_limited_skipped = min(int(summary.get("skipped", 0)), rate_limited)
+        rate_limited_failures = max(0, rate_limited - int(rate_limited_skipped))
+    # 上限同样不能超过实际失败数，避免任何情况下把业务失败抹平为 0。
+    rate_limited_failures = min(rate_limited_failures, failed_or_error)
     return max(0, failed_or_error - rate_limited_failures)
 
 
@@ -452,13 +463,31 @@ def card_template(
     else:
         color, status = "green", "全部通过"
 
-    pass_rate = (passed / total * 100) if total else 0.0
+    # 失败与未完成是两个口径。未完成的用例没有验证任何业务行为，既不能算通过，
+    # 也不能算失败：把它留在“通过率”分母里会让 0 业务失败的一轮显示成大量不通过，
+    # 把它从分母剔除又会让 13/30 显示成 100%。因此显式给出两个数——
+    # 已执行用例的通过率（判断站点好坏）和有效覆盖（判断本轮可不可信）。
+    unfinished = rate_limited + ordinary_skipped
+    executed = total - unfinished
+    executed_pass_rate = (passed / executed * 100) if executed else 0.0
+    coverage = (executed / total * 100) if total else 0.0
     fields = [
         {
             "is_short": True,
             "text": {
                 "tag": "lark_md",
-                "content": f"**执行通过率**\n{pass_rate:.1f}%（{passed}/{total}）",
+                "content": (
+                    f"**已执行通过率**\n{executed_pass_rate:.1f}%（{passed}/{executed}）"
+                ),
+            },
+        },
+        {
+            "is_short": True,
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**有效覆盖**\n{coverage:.0f}%（{executed}/{total} 条得出结论）"
+                ),
             },
         },
         {

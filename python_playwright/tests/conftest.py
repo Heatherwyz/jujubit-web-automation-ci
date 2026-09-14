@@ -813,16 +813,42 @@ def pytest_html_results_summary(prefix, summary, postfix, session):
         return "".join(content) or '<tr><td colspan="4">无</td></tr>'
 
     rate_limited_skipped = sum("HTTP 429" in (item.get("detail") or "") for item in skipped)
+    # 失败与未完成是两个口径：未完成的用例没有验证任何业务行为，既不能算通过，
+    # 也不能算失败。报告首屏必须直接给出结论和有效覆盖，否则“13 通过 + 17 未完成”
+    # 会被读成 100% 通过。
+    total_count = len(results)
+    executed_count = len(passed) + len(failed)
+    if failed:
+        verdict = f"执行失败：{len(failed)}/{total_count} 条业务失败"
+        banner_color = "#ffecec"
+    elif skipped:
+        verdict = f"执行完成但 {len(skipped)}/{total_count} 条未完成"
+        banner_color = "#fff6e5"
+    else:
+        verdict = "执行通过"
+        banner_color = "#eef5ff"
+    coverage = executed_count / total_count * 100 if total_count else 0.0
+    coverage_text = (
+        f"{coverage:.0f}%（{executed_count}/{total_count} 条得出业务结论"
+        + (
+            f"；{len(skipped)} 条未完成，其中因 HTTP 429 未完成 {rate_limited_skipped} 条，"
+            "未验证任何业务行为）"
+            if skipped
+            else "）"
+        )
+    )
     prefix.append(
         '<style>#results-table,.controls{display:none}.jujubit-summary{margin:12px 0;border-collapse:collapse;width:100%}'
         '.jujubit-summary td,.jujubit-summary th{border:1px solid #d9dee8;padding:7px;text-align:left}'
         '.jujubit-summary th{background:#f3f5f8}.jujubit-summary td{vertical-align:top;word-break:break-word}'
         '.jujubit-summary code{white-space:normal;word-break:break-all}'
         '</style>'
-        f'<div class="jujubit-summary" style="padding:10px;background:#eef5ff;border:1px solid #b8d4ff">'
+        f'<div class="jujubit-summary" style="padding:10px;background:{banner_color};border:1px solid #b8d4ff">'
+        f'<strong>{escape(verdict)}</strong><br>'
         f'<strong>执行套件：</strong>{escape(str(suite_name))}；'
         f'<strong>本次收集：</strong>{selected_count} 条'
         + (f'（分层排除 {deselected_count} 条 H5 深度用例）' if deselected_count else "")
+        + f'<br><strong>有效覆盖：</strong>{coverage_text}'
         + '</div>'
         f'<h3>通过用例（{len(passed)}）</h3>'
         '<table class="jujubit-summary"><thead><tr><th>结果</th><th>用例</th></tr></thead><tbody>'

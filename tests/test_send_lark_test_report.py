@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from scripts.send_lark_test_report import (
+    _business_failures,
     _format_started_at,
     _suite_execution_lines,
     _validate_webhook_url,
@@ -285,6 +286,107 @@ class LarkReportTests(unittest.TestCase):
 
         self.assertEqual(card["card"]["header"]["template"], "red")
         self.assertIn("测试进程异常", card["card"]["header"]["title"]["content"])
+
+
+class BusinessFailureCountTests(unittest.TestCase):
+    """业务失败不能被 429 未完成数抹平——这两个是独立口径。"""
+
+    def _summary(self, **kwargs):
+        base = {"total": 30, "passed": 12, "failed": 0, "errors": 0, "skipped": 0}
+        base.update(kwargs)
+        return base
+
+    def test_failure_is_not_cancelled_out_by_rate_limited_skips(self) -> None:
+        """旧格式报告里 1 条真实失败 + 17 条 429 跳过，失败数必须仍是 1。
+
+        回退逻辑曾直接用 rate_limited 相减（1 - 17 取 max 后为 0），
+        真实业务失败被静默清零，卡片还会从红降级成橙。
+        """
+        summary = self._summary(failed=1, skipped=17, rate_limited=17)
+
+        self.assertEqual(_business_failures(summary), 1)
+
+    def test_rate_limited_failure_is_still_excluded(self) -> None:
+        """以 failure 形式记录的 429 仍应从业务失败中剔除。"""
+        summary = self._summary(failed=1, skipped=0, rate_limited=1)
+
+        self.assertEqual(_business_failures(summary), 0)
+
+    def test_explicit_split_fields_are_trusted(self) -> None:
+        summary = self._summary(
+            failed=3,
+            skipped=17,
+            rate_limited=18,
+            rate_limited_skipped=17,
+            rate_limited_failures=1,
+        )
+
+        self.assertEqual(_business_failures(summary), 2)
+
+    def test_rate_limited_count_can_never_exceed_actual_failures(self) -> None:
+        """频控计数异常偏大时也不能让业务失败变成负数或被抹平。"""
+        summary = self._summary(failed=2, skipped=0, rate_limited_failures=99)
+
+        self.assertEqual(_business_failures(summary), 0)
+
+    def test_card_stays_red_when_failure_coexists_with_rate_limiting(self) -> None:
+        """有业务失败时卡片必须是红色，不能被频控降级成橙色。"""
+        summary = {
+            "total": 30,
+            "passed": 12,
+            "failed": 1,
+            "errors": 0,
+            "skipped": 17,
+            "rate_limited": 17,
+            "rate_limited_skipped": 17,
+            "rate_limited_failures": 0,
+            "ordinary_skipped": 0,
+            "duration": "5分0秒",
+            "cases": [
+                {
+                    "module": "购物车",
+                    "name": "test_badge",
+                    "outcome": "failed",
+                    "rate_limited": False,
+                    "detail": "角标未更新",
+                }
+            ],
+        }
+
+        card = card_template(summary, exit_code="1")
+
+        self.assertEqual(card["card"]["header"]["template"], "red")
+        self.assertIn("业务失败", card["card"]["header"]["title"]["content"])
+
+    def test_card_reports_executed_pass_rate_and_effective_coverage(self) -> None:
+        """13 通过 + 17 条未完成：已执行通过率 100%，有效覆盖只有 43%。"""
+        summary = {
+            "total": 30,
+            "passed": 13,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 17,
+            "rate_limited": 17,
+            "rate_limited_skipped": 17,
+            "rate_limited_failures": 0,
+            "ordinary_skipped": 0,
+            "duration": "5分0秒",
+            "cases": [],
+        }
+
+        card = card_template(summary, exit_code="0")
+        contents = [
+            field["text"]["content"]
+            for element in card["card"]["elements"]
+            for field in element.get("fields", [])
+        ]
+        rendered = "\n".join(contents)
+
+        self.assertIn("已执行通过率", rendered)
+        self.assertIn("100.0%（13/13）", rendered)
+        self.assertIn("有效覆盖", rendered)
+        self.assertIn("43%（13/30 条得出结论）", rendered)
+        self.assertEqual(card["card"]["header"]["template"], "orange")
 
 
 class WebhookUrlValidationTests(unittest.TestCase):
