@@ -1,0 +1,56 @@
+name: 离线检查
+
+# 离线层不访问 jujubit.ai：没有浏览器、没有登录态、不受站点频控影响，
+# 因此可以在每个 PR 和每次推送上无条件运行，作为提交前的确定性闸门。
+# 需要真实访问站点的 UI 回归仍由 daily-ui-tests.yml / cart-ui-tests.yml 按计划执行。
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# 与访问站点的工作流不共用并发组：本工作流不产生任何站点请求，
+# 不需要为避免撞 WAF 而排队。
+concurrency:
+  group: jujubit-offline-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    name: 离线单测与契约规则
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: 拉取测试代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-playwright.txt
+
+      - name: 安装测试依赖
+        # 不执行 playwright install：离线层不启动浏览器，省去数百 MB 下载。
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-playwright.txt
+
+      - name: 运行离线单测
+        # 覆盖服务端 HTML 契约规则、429 退避与熔断冷却、报告口径、飞书卡片
+        # 与 Webhook 校验。这些用例结论确定，任何一条红都表示逻辑真的被改坏。
+        run: python -m pytest -q
+
+      - name: 校验线上套件可正常收集
+        # 只做 collect-only：确保 UI 套件没有导入错误或标记拼写问题，
+        # 但不真正访问站点。
+        run: python -m pytest -c pytest-playwright.ini --collect-only -q

@@ -7,7 +7,6 @@ FAQ 交互等需求细节。每条同样由 pytest 自动拆分为 PC/H5 两端�
 import json
 import re
 from html import unescape
-from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 import pytest
@@ -16,26 +15,17 @@ from playwright.sync_api import Error as PlaywrightError, expect
 from python_playwright.pages.home_page import SiteRateLimitError
 
 
-EXPECTED_TITLE = "JuJuBit | Custom Figurines, Crystal Bracelets & Art Toys"
-EXPECTED_DESCRIPTION = (
-    "JuJuBit makes custom figurines from your photo, crystal bracelets, and art toys. "
-    "AI-assisted design, worldwide shipping. Turn your photo into a 3D collectible."
+# 期望值与 HTML 解析器统一由契约模块提供，避免同一份需求在两层各写一遍
+# 而悄悄漂移（历史上 EXPECTED_LOGO_ALT 就是一个全站不存在的值）。
+from python_playwright.home_contract import (  # noqa: E402  保持常量集中在契约层
+    EXPECTED_DESCRIPTION,
+    EXPECTED_H1,
+    EXPECTED_HEADER_CATEGORY_LINKS,
+    EXPECTED_LOGO_ACCESSIBLE_NAME,
+    EXPECTED_NAVIGATION_LINKS,
+    EXPECTED_TITLE,
+    check_all as _check_html_contracts,
 )
-EXPECTED_H1 = "Create Your Own Custom Figurine From a Photo"
-EXPECTED_LOGO_ALT = "JuJuBit - Custom 3D Figurines"
-EXPECTED_NAVIGATION_LINKS = {
-    "Templates": "/collections/templates-create-your-own",
-    "How It Works": "/pages/how-it-works",
-}
-EXPECTED_HEADER_CATEGORY_LINKS = {
-    # 线上主题已将该品类的导航展示文案更新为 FIGURINES；业务集合地址
-    # 仍然是 art-toy。按当前可见文案验收，避免把旧名称误报为缺少链接。
-    "FIGURINES": "/collections/art-toy",
-    "FDM LAMPS": "/collections/fdm",
-    "Crystal Bracelets": "/collections/crystal-bracelets",
-    "Keycaps": "/collections/keycaps",
-    "Photo Boards": "/collections/photo-board",
-}
 # REQ-06 是安全属性验收：所有当前已配置的社交平台都必须独立检查，不能
 # 因为第一个平台失败，就漏掉其他平台的同类问题。Snapchat 已不在当前
 # Footer 配置中，因此不把历史平台清单当成当前首页的必需入口。
@@ -45,146 +35,6 @@ EXPECTED_SOCIAL_PLATFORMS = (
     ("YouTube", "JuJuBit on YouTube", "www.youtube.com", "/@thisisjujubit"),
     ("X", "JuJuBit on X", "x.com", "/thisisjujubit"),
 )
-
-
-class _AnchorCollector(HTMLParser):
-    """从服务端 HTML 中提取真实锚点，避免把脚本字符串误当成导航链接。"""
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.anchors = []
-        self._active_anchor = None
-
-    def handle_starttag(self, tag, attrs):
-        if tag.lower() != "a" or self._active_anchor is not None:
-            return
-        attributes = dict(attrs)
-        self._active_anchor = {"href": attributes.get("href", ""), "text": []}
-
-    def handle_data(self, data):
-        if self._active_anchor is not None:
-            self._active_anchor["text"].append(data)
-
-    def handle_endtag(self, tag):
-        if tag.lower() != "a" or self._active_anchor is None:
-            return
-        self.anchors.append(
-            {
-                "href": self._active_anchor["href"],
-                "text": re.sub(r"\s+", " ", " ".join(self._active_anchor["text"])).strip(),
-            }
-        )
-        self._active_anchor = None
-
-
-class _FaqContentCollector(HTMLParser):
-    """只收集 SSR FAQ section 内结构完整且有正文的问答。"""
-
-    _VOID_TAGS = {
-        "area",
-        "base",
-        "br",
-        "col",
-        "embed",
-        "hr",
-        "img",
-        "input",
-        "link",
-        "meta",
-        "param",
-        "source",
-        "track",
-        "wbr",
-    }
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.has_section = False
-        self.items = []
-        self._stack = []
-        self._section_depth = 0
-        self._current_item = None
-        self._item_depth = None
-        self._summary_depth = None
-        self._question_depth = None
-        self._answer_depth = None
-
-    def handle_starttag(self, tag, attrs):
-        tag = tag.lower()
-        attributes = dict(attrs)
-        if self._section_depth == 0:
-            if tag != "section" or "data-jjb-faq" not in attributes:
-                return
-            self.has_section = True
-            self._section_depth = 1
-            self._stack = [tag]
-            return
-
-        if tag == "section":
-            self._section_depth += 1
-        if tag not in self._VOID_TAGS:
-            self._stack.append(tag)
-        depth = len(self._stack)
-        classes = set((attributes.get("class") or "").split())
-
-        if (
-            tag == "details"
-            and self._current_item is None
-            and ("data-faq-item" in attributes or "jjb-faq__item" in classes)
-        ):
-            self._current_item = {"question": [], "answer": []}
-            self._item_depth = depth
-        if self._current_item is None:
-            return
-        if tag == "summary":
-            self._summary_depth = depth
-        elif tag == "h3" and self._summary_depth is not None:
-            self._question_depth = depth
-        if "data-faq-answer" in attributes or "jjb-faq__answer" in classes:
-            self._answer_depth = depth
-
-    def handle_data(self, data):
-        if self._current_item is None:
-            return
-        if self._question_depth is not None:
-            self._current_item["question"].append(data)
-        if self._answer_depth is not None:
-            self._current_item["answer"].append(data)
-
-    def handle_endtag(self, tag):
-        tag = tag.lower()
-        if self._section_depth == 0 or not self._stack:
-            return
-        try:
-            depth = len(self._stack) - self._stack[::-1].index(tag)
-        except ValueError:
-            return
-        if self._question_depth == depth and tag == "h3":
-            self._question_depth = None
-        if self._answer_depth == depth:
-            self._answer_depth = None
-        if self._summary_depth == depth and tag == "summary":
-            self._summary_depth = None
-        if self._item_depth == depth and tag == "details":
-            self.items.append(
-                {
-                    key: re.sub(r"\s+", " ", " ".join(parts)).strip()
-                    for key, parts in self._current_item.items()
-                }
-            )
-            self._current_item = None
-            self._item_depth = None
-            self._summary_depth = None
-            self._question_depth = None
-            self._answer_depth = None
-
-        if tag == "section":
-            self._section_depth -= 1
-        # Shopify 输出通常是合法嵌套；若第三方富文本产生不完整标签，则从
-        # 当前闭合标签处一起退栈，避免后续问答被错误吞进前一项。
-        del self._stack[depth - 1 :]
-        if self._section_depth == 0:
-            self._stack = []
 
 
 def _assert_destination_is_usable(page, response, href):
@@ -327,15 +177,26 @@ def test_homepage_seo_metadata(home, page, test_platform):
 
 
 def test_logo_accessibility_text(home, test_platform):
-    """REQ-02：Logo 图片使用需求指定的精确 alt，并链接首页。"""
+    """REQ-02：可见 Logo 有无障碍名称并指向首页。
+
+    线上 Logo 是 inline SVG，没有 img 子元素。原实现写成“有 img 就断言 alt，
+    否则断言 aria-label”，于是 alt 分支从未执行过，而它比对的常量在全站出现
+    0 次——这条断言长期是死代码。现在无论哪种实现都要求得到无障碍名称。
+    """
     home.close_welcome_popup()
     logo_link = home.visible_logo()
     expect(logo_link).to_have_count(1)
     logo_image = logo_link.locator("img")
     if logo_image.count():
-        expect(logo_image).to_have_attribute("alt", EXPECTED_LOGO_ALT)
+        alt = logo_image.first.get_attribute("alt") or ""
+        assert EXPECTED_LOGO_ACCESSIBLE_NAME in alt, (
+            f"图片 Logo 的 alt 需包含 {EXPECTED_LOGO_ACCESSIBLE_NAME!r}，实际为 {alt!r}"
+        )
     else:
-        expect(logo_link).to_have_attribute("aria-label", "JuJuBit")
+        # inline SVG Logo：无障碍名称必须由锚点 aria-label 提供。
+        expect(logo_link).to_have_attribute(
+            "aria-label", EXPECTED_LOGO_ACCESSIBLE_NAME
+        )
 
 
 def test_hero_lcp_media_is_eager(home, page, test_platform):
@@ -956,31 +817,31 @@ def test_homepage_image_alt_policy(home, page, test_platform):
 
 
 def test_core_content_is_present_in_server_html(home, page, test_platform):
-    """REQ-15：不执行 JavaScript 的原始首页 HTML 包含核心 SEO 与导航内容。"""
+    """REQ-15：不执行 JavaScript 的原始首页 HTML 满足全部服务端契约。
+
+    判定逻辑统一在 ``home_contract``，与 ``test_home_html_contract.py`` 共用同一
+    份规则，避免两处各写一遍而漂移。本条保留的额外价值是浏览器层的失败取证：
+    契约不符时顺带截取当前页面证据，便于人工确认是主题改动还是渲染问题。
+
+    日常判断服务端 HTML 是否合规请看契约层（8 条、不起浏览器、约 2 秒）；
+    这条是同一规则在浏览器套件内的冗余校验。
+    """
     try:
         response = home.get_with_rate_limit_retry(home.base_url, timeout=20_000)
     except SiteRateLimitError as error:
         pytest.skip(str(error))
     assert response.status == 200, f"首页原始 HTML 返回 HTTP {response.status}"
     html = response.text()
-    normalized = re.sub(r"\s+", " ", unescape(html))
-    head_match = re.search(r"<head\b[^>]*>(.*?)</head>", html, re.I | re.S)
-    assert head_match, "首页原始 HTML 缺少 head"
-    title_matches = re.findall(
-        r"<title\b[^>]*>(.*?)</title>", head_match.group(1), re.I | re.S
+
+    report = _check_html_contracts(html)
+    if not report:
+        return
+
+    summary = "；".join(
+        f"{name}：{'，'.join(problems)}" for name, problems in report.items()
     )
-    title_texts = [
-        re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", value))).strip()
-        for value in title_matches
-    ]
-    assert title_texts == [EXPECTED_TITLE], f"首页原始 HTML title 应唯一且精确匹配，实际为 {title_texts}"
-    assert EXPECTED_DESCRIPTION in normalized, "首页原始 HTML 缺少精确 meta description"
-    h1_matches = re.findall(r"<h1\b[^>]*>(.*?)</h1>", html, re.I | re.S)
-    h1_texts = [
-        re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", value))).strip()
-        for value in h1_matches
-    ]
-    if h1_texts != [EXPECTED_H1]:
+    # H1 与导航是最常见的主题回归点，优先对这两处取证。
+    if "唯一 H1" in report:
         visible_h1 = page.locator("h1")
         if visible_h1.count():
             evidence_target = (
@@ -988,46 +849,7 @@ def test_core_content_is_present_in_server_html(home, page, test_platform):
                 if visible_h1.is_visible()
                 else page.get_by_role("region", name="Banner")
             )
-            home.mark_failure_evidence(
-                evidence_target,
-                f"服务端 HTML H1 应为 {EXPECTED_H1!r}，实际为 {h1_texts!r}",
-            )
-        raise AssertionError(f"原始 HTML H1 应唯一且精确匹配，实际为 {h1_texts}")
-    collector = _AnchorCollector()
-    collector.feed(html)
-    for label, path in EXPECTED_NAVIGATION_LINKS.items():
-        matches = [
-            anchor for anchor in collector.anchors
-            if anchor["text"].casefold() == label.casefold()
-            and urlparse(anchor["href"]).path.rstrip("/") == path.rstrip("/")
-        ]
-        if not matches:
-            home.mark_failure_evidence(
-                page.locator("header"),
-                f"服务端 HTML 缺少真实锚点 {label} -> {path}",
-            )
-            raise AssertionError(f"原始 HTML 缺少导航锚点 {label} -> {path}")
-    # FAQ 标题由主题文案配置（当前为 ``FAQs``），不能把旧稿中的
-    # ``Frequently Asked Questions`` 当成唯一正确值。这里验收稳定的
-    # section 标识和 SSR 问答结构，再由 REQ-09/REQ-13 检查交互与 Schema。
-    section_markers = ("Pick Your Style", "How It Works")
-    missing_sections = [marker for marker in section_markers if marker not in normalized]
-    if missing_sections:
-        raise AssertionError("原始 HTML 缺少核心 section 文字：" + "、".join(missing_sections))
-    faq_collector = _FaqContentCollector()
-    faq_collector.feed(html)
-    if not faq_collector.has_section:
-        raise AssertionError("原始 HTML 缺少 FAQ section（data-jjb-faq）")
-    if not faq_collector.items:
-        raise AssertionError("原始 HTML 的 FAQ section 内没有 SSR 问答")
-    incomplete_items = [
-        index
-        for index, item in enumerate(faq_collector.items, start=1)
-        if not item["question"] or not item["answer"]
-    ]
-    if incomplete_items:
-        raise AssertionError(
-            "原始 HTML 的 FAQ 问题或答案为空：第 "
-            + "、".join(map(str, incomplete_items))
-            + " 项"
-        )
+            home.mark_failure_evidence(evidence_target, summary)
+    elif {"导航真实锚点", "品类入口地址"} & report.keys():
+        home.mark_failure_evidence(page.locator("header"), summary)
+    raise AssertionError(f"服务端 HTML 契约不符：{summary}")

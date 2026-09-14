@@ -67,9 +67,44 @@ artifacts/runs/<时间戳>/jujubit-report-<时间戳>.html
 
 打开报告后，可直接查看通过用例、失败用例，以及失败行中的“播放错误视频”链接。
 
+## 测试分层
+
+用例按**对环境的依赖强度**分三层。分层的目的是让失败可解释：越靠上的层结论越
+确定，红了就是真问题；越靠下的层才需要先排除环境因素。
+
+| 层 | 位置 | 依赖 | 条数 | 耗时 | 期望状态 |
+| --- | --- | --- | --- | --- | --- |
+| 离线单测 | `tests/` | 无（不联网） | 151 | < 1 秒 | 硬性全绿 |
+| 服务端 HTML 契约 | `python_playwright/tests/test_home_html_contract.py` | 一次 HTTP 请求 | 8 | 约 2 秒 | 硬性全绿 |
+| 浏览器 UI 回归 | `test_home*.py`、`test_cart.py` | 浏览器 + 登录态 + 公网 | 94 | 数分钟 | 允许环境噪声 |
+
+**离线单测**验证框架自身逻辑：契约规则、429 退避与熔断冷却、报告口径、飞书卡片
+与 Webhook 校验。不访问站点，因此每个 PR 都会跑（见 `.github/workflows/offline-checks.yml`）。
+
+**服务端 HTML 契约层**只取一次首页原始 HTML，不启动浏览器、不分 PC/H5（同一份
+HTML 两端相同）。它回答"不执行 JavaScript 的 HTML 是否包含约定内容"——SEO 元数据、
+唯一 H1、导航与品类真实锚点、核心版块标题、FAQ 服务端渲染与结构化数据一致性。
+没有渲染时序、视口差异和登录态，结论确定：
+
+```bash
+.venv/bin/python -m pytest -c pytest-playwright.ini -m html_contract -q
+```
+
+判定规则集中在 `python_playwright/home_contract.py`，由 31 条离线单测逐条覆盖。
+浏览器层复用同一份规则和期望值常量，不再各写一遍——历史上两处分别维护时，
+`EXPECTED_LOGO_ALT` 曾长期是一个全站出现 0 次的字符串。
+
+**浏览器 UI 回归**才需要真实点击、可见性与遮挡判断、购物车登录态。这一层会受
+频控、人机验证和主题异步初始化影响，失败时先看是不是"未完成"（见下方报告口径）。
+
+新增服务端 HTML 断言时，在 `home_contract.py` 写一个返回问题列表的检查函数并登记到
+`HOME_HTML_CONTRACTS`，契约层会自动多出一条记录，同时补一条离线单测。
+
 ## 目录说明
 
 - `python_playwright/`：页面对象、fixture 和测试用例。
+- `python_playwright/home_contract.py`：服务端 HTML 契约的期望值与纯解析断言，不依赖 Playwright。
+- `tests/`：离线单测，不访问站点。
 - `docs/`：需求测试用例设计。
 - `recorded/`：真实浏览器 Codegen 录制资产；只用于页面变更评审和定位器微调，不直接作为 CI 回归脚本。
 - `scripts/record_ui_flow.py`：统一启动 PC/H5 真实录制；`scripts/validate_recording.py`：离线检查录制语法、定位器风险和敏感输入。

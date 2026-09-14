@@ -59,6 +59,7 @@ CASE_TITLES = {
     "test_homepage_json_ld_is_valid_and_matches_faq": "REQ-13: JSON-LD 可解析且 FAQ 与页面同源",
     "test_homepage_image_alt_policy": "REQ-14: 首页图片 alt 符合 SEO 与合规要求",
     "test_core_content_is_present_in_server_html": "REQ-15: 原始 HTML 包含核心 SEO、导航与区块内容",
+    "test_home_server_html_contract": "HTML 契约",
     "test_ci_smoke_generate_add_and_checkout": (
         "CART-SMOKE: 单一登录上下文完成生成、加购、全屏购物车与 Checkout"
     ),
@@ -866,9 +867,14 @@ def pytest_html_results_summary(prefix, summary, postfix, session):
     )
 
 
-def _case_title(function_name):
-    """将 Python 函数名映射成报告中面向业务的中文标题。"""
-    return CASE_TITLES.get(function_name, function_name)
+def _case_title(function_name, variant: str = ""):
+    """将 Python 函数名映射成报告中面向业务的中文标题。
+
+    契约层按契约名参数化（同一个函数产出 8 条记录），必须把该参数附在标题上，
+    否则报告里 8 行完全同名、无法区分是哪条契约失败。
+    """
+    title = CASE_TITLES.get(function_name, function_name)
+    return f"{title}：{variant}" if variant else title
 
 
 @pytest.hookimpl(hookwrapper=True, trylast=True)
@@ -917,7 +923,14 @@ def pytest_runtest_makereport(item, call):
     setattr(item, f"rep_{report.when}", report)
     if report.when == "call" or report.failed or (report.when == "setup" and report.skipped):
         function_name = item.originalname or item.name.split("[")[0]
-        platform = item.callspec.params.get("test_platform", "unknown") if hasattr(item, "callspec") else "unknown"
+        params = getattr(item, "callspec", None)
+        params = params.params if params is not None else {}
+        # 契约层不分 PC/H5（同一份服务端 HTML 两端相同），如实标为 server
+        # 而不是 unknown，避免读报告时误以为平台信息丢失。
+        default_platform = "server" if "contract_name" in params else "unknown"
+        platform = params.get("test_platform", default_platform)
+        # 契约层不参与 PC/H5 参数化，改用契约名区分同一函数的多条记录。
+        variant = str(params.get("contract_name", ""))
         previous = item.config._jujubit_results.get(item.nodeid, {})
         if report.when == "call":
             result_outcome = report.outcome
@@ -930,7 +943,7 @@ def pytest_runtest_makereport(item, call):
             result_outcome = "error"
         item.config._jujubit_results[item.nodeid] = {
             "platform": platform,
-            "title": _case_title(function_name),
+            "title": _case_title(function_name, variant),
             "outcome": result_outcome,
             "detail": _report_detail(report) if result_outcome != "passed" else previous.get("detail", ""),
             "video": previous.get("video", ""),
