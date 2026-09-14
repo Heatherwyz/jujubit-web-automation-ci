@@ -10,8 +10,16 @@ import json
 import re
 import subprocess
 import time
+import sys
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
+
+# 直接以脚本方式运行时 scripts/ 不在包路径上，因此按文件位置补一次仓库根目录。
+if __package__:
+    from scripts._metrics import percentile as _shared_percentile
+else:  # pragma: no cover - 仅在 python scripts/xxx.py 直接执行时走到
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts._metrics import percentile as _shared_percentile
 
 
 LINK_RE = re.compile(r"\[[^\]]*\]\((https?://[^)]+)\)")
@@ -124,11 +132,9 @@ def measure(url: str, timeout: float, kind: str = "internal") -> dict:
 
 
 def percentile(values: list[float], pct: float) -> float | None:
-    if not values:
-        return None
-    values = sorted(values)
-    index = min(len(values) - 1, round((len(values) - 1) * pct))
-    return round(values[index], 1)
+    """委托共用实现，保证与其他性能脚本得出同一个分位数。"""
+    result = _shared_percentile(values, pct)
+    return None if result is None else round(result, 1)
 
 
 def build_report(results: list[dict], source: Path, started_at: str, timeout: float, concurrency: int) -> str:
