@@ -35,9 +35,25 @@ SUMMARY_KEYS = (
     "rate_limited_failures",
     "ordinary_skipped",
 )
+# 429 必须与 HTTP 语义相邻才算频控。此前用裸 \b429\b 匹配失败正文全文，
+# 于是 traceback 的 "line 429"、"assert 429 == 430"、"resolved after 429 ms"
+# 都会把真实业务失败改判成"受站点频控影响"，卡片从红降级成橙。
+# traceback 里出现 429 行号是完全正常的事，不能作为频控证据。
 RATE_LIMIT_PATTERN = re.compile(
-    r"(?:\bhttp\s*)?\b429\b|访问频控|rate[ -]?limit(?:ed|ing)?|too many requests",
-    re.I,
+    r"""
+      http\s*/?\d*(?:\.\d+)?\s*429\b   # HTTP 429 / HTTP/1.1 429
+    | \b429\s*(?:too\s+many\s+requests|frequency|rate)  # 429 Too Many Requests
+    | (?:status(?:_code)?|code|响应|返回)\s*[=:：]?\s*429\b  # status=429 / 返回 429
+    # 反向：pytest 会把断言展开成 "429 = <Response ...>.status"，
+    # 这是真实的 429 断言失败（历史 artifacts 里出现过），必须识别。
+    | \b429\s*=\s*[^\n]{0,100}?\.status\b
+    | 访问频控
+    | 频率限制
+    | rate[ _-]?limit(?:ed|ing)?
+    | too\s+many\s+requests
+    | retry[- ]after
+    """,
+    re.I | re.X,
 )
 MODULE_ORDER = {"首页": 0, "购物车": 1, "其他": 99}
 MODULE_PATTERNS = {
@@ -467,9 +483,17 @@ def card_template(
     # 也不能算失败：把它留在“通过率”分母里会让 0 业务失败的一轮显示成大量不通过，
     # 把它从分母剔除又会让 13/30 显示成 100%。因此显式给出两个数——
     # 已执行用例的通过率（判断站点好坏）和有效覆盖（判断本轮可不可信）。
-    unfinished = rate_limited + ordinary_skipped
-    executed = total - unfinished
+    #
+    # 分母用正向口径 passed + business_failures，即"真正得出业务结论的用例"。
+    # 原先写成 total - (rate_limited + ordinary_skipped)：rate_limited 含以
+    # failure 形式记录的 429，而那些用例本来就不在 passed 里，分母被过度扣减，
+    # 旧格式报告曾算出 450%（total=10 passed=9 failed=1 rate_limited=8）。
+    executed = passed + business_failures
+    # 兜底防御：任何计数异常都不该让比率越界或出现负数分母。
+    executed = max(0, min(executed, total))
+    unfinished = max(0, total - executed)
     executed_pass_rate = (passed / executed * 100) if executed else 0.0
+    executed_pass_rate = min(executed_pass_rate, 100.0)
     coverage = (executed / total * 100) if total else 0.0
     fields = [
         {

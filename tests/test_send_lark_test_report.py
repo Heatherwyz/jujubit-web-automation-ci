@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from scripts.send_lark_test_report import (
+    RATE_LIMIT_PATTERN,
     _business_failures,
     _format_started_at,
     _suite_execution_lines,
@@ -387,6 +388,148 @@ class BusinessFailureCountTests(unittest.TestCase):
         self.assertIn("有效覆盖", rendered)
         self.assertIn("43%（13/30 条得出结论）", rendered)
         self.assertEqual(card["card"]["header"]["template"], "orange")
+
+
+class RateLimitPatternTests(unittest.TestCase):
+    """429 必须与 HTTP 语义相邻才算频控。
+
+    此前用裸 \\b429\\b 匹配失败正文全文，traceback 里的 "line 429"、
+    "assert 429 == 430"、"resolved after 429 ms" 都会把真实业务失败改判成
+    "受站点频控影响"，卡片从红降级成橙。飞书卡片是 CI 唯一对外出口。
+    """
+
+    def test_real_rate_limit_messages_are_recognised(self) -> None:
+        for message in (
+            "Customer Account returned HTTP 429 Too Many Requests",
+            "HTTP/1.1 429",
+            "站点访问频控（HTTP 429）：jujubit.ai/cart.js 未完成。",
+            "Shopify Customer Account 登录服务返回 HTTP 429",
+            "响应 429",
+            "rate limited by WAF",
+            "rate-limit exceeded",
+            "Too Many Requests",
+            "Retry-After: 30",
+            "频率限制触发",
+        ):
+            self.assertTrue(RATE_LIMIT_PATTERN.search(message), message)
+
+    def test_pytest_expanded_status_assertion_is_recognised(self) -> None:
+        """pytest 会把断言展开成 '429 = <Response ...>.status'，这是真频控。"""
+        message = (
+            "assert 429 < 400  where 429 = "
+            "<Response url='https://shopify.com/authentication/x'>.status"
+        )
+
+        self.assertTrue(RATE_LIMIT_PATTERN.search(message))
+
+    def test_bare_429_in_traceback_is_not_rate_limiting(self) -> None:
+        """traceback 里出现 429 行号是完全正常的事，不能当频控证据。"""
+        for message in (
+            'File "home_page.py", line 429, in check',
+            "assert 429 == 430",
+            "locator resolved after 429 ms but was detached",
+            "content-length 4290, got 429",
+            "expected 429 items in gallery",
+        ):
+            self.assertIsNone(RATE_LIMIT_PATTERN.search(message), message)
+
+    def test_ordinary_failures_are_not_rate_limiting(self) -> None:
+        for message in (
+            "AssertionError: cart badge should be 2, got 1",
+            "Timeout 30000ms exceeded",
+            "元素被遮挡：顶层元素=h2.jjb-banner__title",
+        ):
+            self.assertIsNone(RATE_LIMIT_PATTERN.search(message), message)
+
+    def test_business_failure_with_429_line_number_stays_red(self) -> None:
+        """端到端：traceback 含 line 429 的业务失败必须仍是红色卡片。"""
+        # 用单引号包裹文件名，避免双引号破坏 XML 属性。
+        detail = "File 'home_page.py', line 429, in check / banner missing"
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "results.xml"
+            path.write_text(
+                '<?xml version="1.0"?>'
+                '<testsuite name="pytest" tests="2" failures="1" errors="0"'
+                ' skipped="0" time="12.0">'
+                '<testcase classname="python_playwright.tests.test_cart"'
+                ' name="test_badge[pc]" time="3.0">'
+                f'<failure message="{detail}">{detail}</failure></testcase>'
+                '<testcase classname="python_playwright.tests.test_cart"'
+                ' name="test_ok[pc]" time="2.0"/></testsuite>',
+                encoding="utf-8",
+            )
+            summary = read_results(str(path))
+
+        self.assertEqual(summary["total"], 2, "XML 未被正确解析，测试自身有问题")
+
+        self.assertEqual(summary["rate_limited"], 0)
+        card = card_template(summary, exit_code="1")
+        self.assertEqual(card["card"]["header"]["template"], "red")
+
+
+class ExecutedPassRateTests(unittest.TestCase):
+    """已执行通过率的分母必须是真正得出业务结论的用例数。"""
+
+    def _rate(self, card) -> str:
+        for element in card["card"]["elements"]:
+            for field in element.get("fields", []):
+                content = field["text"]["content"]
+                if "已执行通过率" in content:
+                    return content
+        return ""
+
+    def test_legacy_summary_cannot_exceed_one_hundred_percent(self) -> None:
+        """旧格式报告曾算出 450%：分母被 rate_limited 过度扣减。"""
+        summary = {
+            "total": 10,
+            "passed": 9,
+            "failed": 1,
+            "errors": 0,
+            "skipped": 0,
+            "rate_limited": 8,
+            "duration": "1分0秒",
+            "cases": [],
+        }
+
+        rate = self._rate(card_template(summary, exit_code="1"))
+
+        self.assertIn("100.0%（9/9）", rate)
+        self.assertNotIn("450", rate)
+
+    def test_denominator_counts_passed_plus_business_failures(self) -> None:
+        summary = {
+            "total": 30,
+            "passed": 12,
+            "failed": 1,
+            "errors": 0,
+            "skipped": 17,
+            "rate_limited": 17,
+            "rate_limited_skipped": 17,
+            "rate_limited_failures": 0,
+            "ordinary_skipped": 0,
+            "duration": "5分0秒",
+            "cases": [],
+        }
+
+        rate = self._rate(card_template(summary, exit_code="1"))
+
+        self.assertIn("92.3%（12/13）", rate)
+
+    def test_zero_results_does_not_divide_by_zero(self) -> None:
+        summary = {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 0,
+            "rate_limited": 0,
+            "duration": "0秒",
+            "cases": [],
+        }
+
+        rate = self._rate(card_template(summary, exit_code="0"))
+
+        self.assertIn("0.0%（0/0）", rate)
 
 
 class WebhookUrlValidationTests(unittest.TestCase):
