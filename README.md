@@ -74,7 +74,7 @@ artifacts/runs/<时间戳>/jujubit-report-<时间戳>.html
 
 | 层 | 位置 | 依赖 | 条数 | 耗时 | 期望状态 |
 | --- | --- | --- | --- | --- | --- |
-| 离线单测 | `tests/` | 无（不联网） | 151 | < 1 秒 | 硬性全绿 |
+| 离线单测 | `tests/` | 无（不联网） | 175 | < 1 秒 | 硬性全绿 |
 | 服务端 HTML 契约 | `python_playwright/tests/test_home_html_contract.py` | 一次 HTTP 请求 | 8 | 约 2 秒 | 硬性全绿 |
 | 浏览器 UI 回归 | `test_home*.py`、`test_cart.py` | 浏览器 + 登录态 + 公网 | 94 | 数分钟 | 允许环境噪声 |
 
