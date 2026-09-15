@@ -20,28 +20,30 @@ from python_playwright.pages.home_page import SiteRateLimitError
 
 
 @pytest.fixture(scope="module")
-def home_server_html(request) -> str:
-    """整层共用一次首页原始 HTML，避免每条契约各发一次请求放大频控。"""
-    playwright = pytest.importorskip("playwright.sync_api")
+def home_server_html(playwright_runtime, request) -> str:
+    """整层共用一次首页原始 HTML，避免每条契约各发一次请求放大频控。
+
+    必须复用 conftest 的 ``playwright_runtime``（session 级）而不是自己调
+    ``sync_playwright()``：同一进程里再开一个同步运行时会与浏览器层的 session
+    fixture 冲突，报 "Sync API inside the asyncio loop"。契约层单独跑不会暴露
+    这个问题，只有与浏览器层混跑时才炸——这正是它被漏掉的原因。
+    """
     base_url = request.config.getoption("--base-url").rstrip("/")
-    with playwright.sync_playwright() as driver:
-        # api_request_context 只做 HTTP 请求，不启动浏览器进程，也不执行 JS。
-        context = driver.request.new_context(base_url=base_url)
-        try:
-            response = context.get(base_url, timeout=30_000)
-            if response.status == 429:
-                pytest.skip(
-                    "站点访问频控（HTTP 429）：未取得首页原始 HTML，"
-                    "本层契约未完成，不代表页面功能失败。"
-                )
-            assert response.status == 200, (
-                f"首页原始 HTML 返回 HTTP {response.status}"
+    # api_request_context 只做 HTTP 请求，不启动浏览器进程，也不执行 JS。
+    context = playwright_runtime.request.new_context(base_url=base_url)
+    try:
+        response = context.get(base_url, timeout=30_000)
+        if response.status == 429:
+            pytest.skip(
+                "站点访问频控（HTTP 429）：未取得首页原始 HTML，"
+                "本层契约未完成，不代表页面功能失败。"
             )
-            html = response.text()
-        except SiteRateLimitError as error:  # pragma: no cover - 依赖线上频控
-            pytest.skip(str(error))
-        finally:
-            context.dispose()
+        assert response.status == 200, f"首页原始 HTML 返回 HTTP {response.status}"
+        html = response.text()
+    except SiteRateLimitError as error:  # pragma: no cover - 依赖线上频控
+        pytest.skip(str(error))
+    finally:
+        context.dispose()
     assert html.strip(), "首页原始 HTML 为空，疑似白屏或被中间层拦截"
     return html
 

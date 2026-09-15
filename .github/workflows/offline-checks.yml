@@ -54,3 +54,11 @@ jobs:
         # 只做 collect-only：确保 UI 套件没有导入错误或标记拼写问题，
         # 但不真正访问站点。
         run: python -m pytest -c pytest-playwright.ini --collect-only -q
+
+      - name: 校验 fixture 依赖声明
+        # collect-only 抓不到运行期问题。曾经出现过契约层 fixture 自己调
+        # sync_playwright()，与浏览器层的 session fixture 冲突报
+        # "Sync API inside the asyncio loop"——单独跑任一层都正常，只有混跑才炸。
+        # 真正混跑需要访问站点，不能放在离线层；改为静态检查：线上 fixture 不得
+        # 自行创建 Playwright 运行时，必须复用 conftest 的 playwright_runtime。
+        run: python -m pytest tests/test_fixture_wiring.py -q --no-header
