@@ -1,7 +1,11 @@
 name: 离线检查
 
-# 离线层不访问 jujubit.ai：没有浏览器、没有登录态、不受站点频控影响，
-# 因此可以在每个 PR 和每次推送上无条件运行，作为提交前的确定性闸门。
+# 离线层不访问 jujubit.ai：没有登录态、不受站点频控影响，因此可以在每个 PR 和
+# 每次推送上无条件运行，作为提交前的确定性闸门。
+#
+# "离线"指不访问站点，不等于不用浏览器：注入 JS 的可见性与遮挡判定（
+# tests/test_click_visible_control_js.py）必须在真实 Chromium 里验证，它只加载
+# set_content 提供的本地 HTML，不发任何外部请求。
 # 需要真实访问站点的 UI 回归仍由 daily-ui-tests.yml / cart-ui-tests.yml 按计划执行。
 on:
   pull_request:
@@ -40,10 +44,15 @@ jobs:
           cache-dependency-path: requirements-playwright.txt
 
       - name: 安装测试依赖
-        # 不执行 playwright install：离线层不启动浏览器，省去数百 MB 下载。
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-playwright.txt
+
+      - name: 安装 Chromium
+        # 注入 JS 的可见性与遮挡判定必须在真实浏览器里验证（只加载本地
+        # set_content 的 HTML，不访问站点）。只装 chromium，不带 --with-deps：
+        # ubuntu-latest 已含所需系统库，省一次 apt 安装。
+        run: python -m playwright install chromium
 
       - name: 运行离线单测
         # 覆盖服务端 HTML 契约规则、429 退避与熔断冷却、报告口径、飞书卡片
