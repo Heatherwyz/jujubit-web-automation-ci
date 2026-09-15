@@ -15,6 +15,10 @@ from html import escape
 import pytest
 from playwright.sync_api import sync_playwright
 
+from python_playwright.report_summary import (
+    RESULT_LABELS,
+    build_summary_html,
+)
 from python_playwright.cart_cases import (
     CART_CASES_BY_FUNCTION,
     DAILY_H5_CASE_FUNCTIONS,
@@ -72,16 +76,6 @@ CASE_TITLES = {
         for function_name, case in CART_CASES_BY_FUNCTION.items()
     },
 }
-
-RESULT_LABELS = {
-    "passed": "✅ 通过",
-    "failed": "❌ 失败",
-    "skipped": "⏭ 跳过",
-    "error": "⚠ 错误",
-    "xfailed": "预期失败",
-    "xpassed": "意外通过",
-}
-
 
 class SiteRequestPacer:
     """串行控制首页导航频率，避免连续 case 触发线上 429 限流。"""
@@ -691,182 +685,22 @@ def pytest_html_report_title(report):
 
 
 def pytest_html_results_summary(prefix, summary, postfix, session):
-    """在报告顶部输出独立的通过、失败、跳过用例明细表。"""
+    """在报告顶部输出独立的通过、失败、跳过用例明细表。
+
+    渲染逻辑在 python_playwright/report_summary.py。这里只负责从 session.config
+    取数据——hook 必须留在 conftest 才能被 pytest 发现，但纯函数部分抽出去后
+    可以直接测，不用伪造 session。
+    """
     results = list(getattr(session.config, "_jujubit_results", {}).values())
     if not results:
         return
-    suite_name = getattr(session.config, "_jujubit_suite_name", "默认回归")
     collection = getattr(session.config, "_jujubit_collection_counts", {})
-    selected_count = collection.get("selected", len(results))
-    deselected_count = collection.get("deselected", 0)
-    # 报告首页直接输出中文明细，避免用户还要在 pytest-html 原始表格中筛选。
-    passed = [item for item in results if item["outcome"] == "passed"]
-    failed = [
-        item
-        for item in results
-        if item["outcome"] in {"failed", "error", "xpassed"}
-    ]
-    skipped = [
-        item
-        for item in results
-        if item["outcome"] in {"skipped", "xfailed"}
-    ]
-
-    def simple_rows(items):
-        content = []
-        for item in items:
-            status = RESULT_LABELS.get(item["outcome"], "⚠ 未知")
-            content.append(
-                f'<tr><td>{status}</td><td>[{escape(str(item["platform"]).upper())}] '
-                f'{escape(item["title"])}</td></tr>'
-            )
-        return "".join(content) or '<tr><td colspan="2">无</td></tr>'
-
-    def skipped_rows(items):
-        """展示未完成原因，避免把 429 和普通跳过混为一谈。"""
-        content = []
-        for item in items:
-            status = RESULT_LABELS.get(item["outcome"], "⚠ 未知")
-            detail = escape(item.get("detail") or "未提供跳过原因")
-            content.append(
-                f'<tr><td>{status}</td><td>[{escape(str(item["platform"]).upper())}] '
-                f'{escape(item["title"])}</td><td>{detail}</td></tr>'
-            )
-        return "".join(content) or '<tr><td colspan="3">无</td></tr>'
-
-    def failure_location(item):
-        """生成页面地址、DOM 路径和截图视口说明。"""
-        page_url = item.get("page_url") or ""
-        page_path = item.get("page_path") or page_url or "未取得"
-        page_title = item.get("page_title") or "未取得"
-        if page_url:
-            page_link = (
-                f'<a target="_blank" rel="noopener" href="{escape(page_url)}">'
-                f'{escape(page_path)}</a>'
-            )
-        else:
-            page_link = escape(page_path)
-        evidence = item.get("evidence") or {}
-        selector = evidence.get("selector") or "未指定具体元素（截图显示失败时当前视口）"
-        note = evidence.get("note") or "未提供元素级说明"
-        element_text = evidence.get("text") or "无可见文案"
-        attributes = evidence.get("attributes") or {}
-        attribute_items = [
-            f"{escape(str(key))}={escape(str(value))}"
-            for key, value in attributes.items()
-            if value not in (None, "")
-        ]
-        attribute_text = "；".join(attribute_items) or "无"
-        box = evidence.get("box") or {}
-        if box:
-            box_text = (
-                f"元素坐标 x={box.get('x', '?')}, y={box.get('y', '?')}, "
-                f"宽={box.get('width', '?')}, 高={box.get('height', '?')}"
-            )
-        else:
-            box_text = "未取得元素坐标"
-        viewport_text = (
-            f"截图视口滚动 x={item.get('scroll_x', 0)}, y={item.get('scroll_y', 0)}，"
-            f"尺寸 {item.get('viewport_width', '?')}×{item.get('viewport_height', '?')}"
-        )
-        return (
-            f"<div><strong>页面：</strong>{page_link}</div>"
-            f"<div><strong>标题：</strong>{escape(page_title)}</div>"
-            f"<div><strong>元素路径：</strong><code>{escape(str(selector))}</code></div>"
-            f"<div><strong>元素文案：</strong>{escape(str(element_text))}</div>"
-            f"<div><strong>属性：</strong>{attribute_text}</div>"
-            f"<div><strong>标注：</strong>{escape(str(note))}</div>"
-            f"<div><strong>截图位置：</strong>{escape(box_text)}；{escape(viewport_text)}</div>"
-        )
-
-    def failure_rows(items):
-        content = []
-        for item in items:
-            status = RESULT_LABELS.get(item["outcome"], "⚠ 未知")
-            detail = escape(item.get("detail") or "未提供错误详情")
-            attachments = []
-            if item.get("screenshot"):
-                attachments.append(
-                    f'<a target="_blank" rel="noopener" '
-                    f'href="{escape(item["screenshot"])}">查看红框截图</a>'
-                )
-            elif item.get("screenshot_error"):
-                attachments.append(
-                    f"截图未生成：{escape(item['screenshot_error'])}"
-                )
-            else:
-                attachments.append("截图未生成")
-            if item.get("video"):
-                attachments.append(
-                    f'<a target="_blank" rel="noopener" '
-                    f'href="{escape(item["video"])}">播放错误视频</a>'
-                )
-            elif item.get("video_error"):
-                attachments.append(
-                    f"视频未生成：{escape(item['video_error'])}"
-                )
-            else:
-                attachments.append("视频未生成")
-            case_cell = (
-                f"<strong>{status}</strong><br>"
-                f"[{escape(str(item['platform']).upper())}] {escape(item['title'])}"
-            )
-            content.append(
-                f"<tr><td>{case_cell}</td><td>{failure_location(item)}</td>"
-                f"<td>{detail}</td><td>{'<br>'.join(attachments)}</td></tr>"
-            )
-        return "".join(content) or '<tr><td colspan="4">无</td></tr>'
-
-    rate_limited_skipped = sum("HTTP 429" in (item.get("detail") or "") for item in skipped)
-    # 失败与未完成是两个口径：未完成的用例没有验证任何业务行为，既不能算通过，
-    # 也不能算失败。报告首屏必须直接给出结论和有效覆盖，否则“13 通过 + 17 未完成”
-    # 会被读成 100% 通过。
-    total_count = len(results)
-    executed_count = len(passed) + len(failed)
-    if failed:
-        verdict = f"执行失败：{len(failed)}/{total_count} 条业务失败"
-        banner_color = "#ffecec"
-    elif skipped:
-        verdict = f"执行完成但 {len(skipped)}/{total_count} 条未完成"
-        banner_color = "#fff6e5"
-    else:
-        verdict = "执行通过"
-        banner_color = "#eef5ff"
-    coverage = executed_count / total_count * 100 if total_count else 0.0
-    coverage_text = (
-        f"{coverage:.0f}%（{executed_count}/{total_count} 条得出业务结论"
-        + (
-            f"；{len(skipped)} 条未完成，其中因 HTTP 429 未完成 {rate_limited_skipped} 条，"
-            "未验证任何业务行为）"
-            if skipped
-            else "）"
-        )
-    )
     prefix.append(
-        '<style>#results-table,.controls{display:none}.jujubit-summary{margin:12px 0;border-collapse:collapse;width:100%}'
-        '.jujubit-summary td,.jujubit-summary th{border:1px solid #d9dee8;padding:7px;text-align:left}'
-        '.jujubit-summary th{background:#f3f5f8}.jujubit-summary td{vertical-align:top;word-break:break-word}'
-        '.jujubit-summary code{white-space:normal;word-break:break-all}'
-        '</style>'
-        f'<div class="jujubit-summary" style="padding:10px;background:{banner_color};border:1px solid #b8d4ff">'
-        f'<strong>{escape(verdict)}</strong><br>'
-        f'<strong>执行套件：</strong>{escape(str(suite_name))}；'
-        f'<strong>本次收集：</strong>{selected_count} 条'
-        + (f'（分层排除 {deselected_count} 条 H5 深度用例）' if deselected_count else "")
-        + f'<br><strong>有效覆盖：</strong>{coverage_text}'
-        + '</div>'
-        f'<h3>通过用例（{len(passed)}）</h3>'
-        '<table class="jujubit-summary"><thead><tr><th>结果</th><th>用例</th></tr></thead><tbody>'
-        f'{simple_rows(passed)}</tbody></table>'
-        f'<h3>失败用例（{len(failed)}）</h3>'
-        '<table class="jujubit-summary"><thead><tr><th>结果与用例</th><th>页面与错误位置</th><th>错误说明</th><th>截图与录像</th></tr></thead><tbody>'
-        f'{failure_rows(failed)}</tbody></table>'
-        + (
-            f'<h3>未完成 / 跳过用例（{len(skipped)}，其中因 HTTP 429 未完成 {rate_limited_skipped}）</h3>'
-            '<table class="jujubit-summary"><thead><tr><th>结果</th><th>用例</th><th>原因</th></tr></thead><tbody>'
-            f'{skipped_rows(skipped)}</tbody></table>'
-            if skipped
-            else ""
+        build_summary_html(
+            results,
+            suite_name=getattr(session.config, "_jujubit_suite_name", "默认回归"),
+            selected_count=collection.get("selected", len(results)),
+            deselected_count=collection.get("deselected", 0),
         )
     )
 
