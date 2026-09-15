@@ -114,6 +114,7 @@ Logo 无障碍名称、FAQ 结构化数据一致性。没有渲染时序、视�
 - `scripts/record_ui_flow.py`：统一启动 PC/H5 真实录制；`scripts/validate_recording.py`：离线检查录制语法、定位器风险和敏感输入。
 - `run_all.py`：一键运行和按时间戳归档入口。
 - `artifacts/runs/`：历史报告及关联失败视频。
+- `AGENTS.md`：给 AI 助手的项目约定（各层运行命令、结果口径、修失败时的原则）。
 
 ## 页面变化时通过真实录制微调
 
