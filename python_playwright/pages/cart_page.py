@@ -44,6 +44,26 @@ IS_RENDERED_JS = """
 """
 
 
+# 超时按"等的是什么"分档，而不是散落的裸字面量（原先 30 秒那档在本文件出现 26
+# 次）。命名后每个数字的含义显式化，调整某一类等待时不会误改其他类。
+# 定义在模块级是必须的：函数签名的默认值在类体求值时 self 尚不存在。
+#
+# 外部服务：生成任务挂载、图片下载、跳转 Shopify 托管结算页。依赖第三方处理
+# 时间，给足余量——这一档超时基本可以断定真的坏了。
+TIMEOUT_EXTERNAL_SERVICE = 60_000
+# 站内业务操作：加购、改数量、打开购物车等需要一次 API 往返的动作。
+TIMEOUT_BUSINESS_ACTION = 30_000
+# 抽屉关闭：纯客户端收起动画，比业务操作快，但要容忍 Portal 节点替换。
+TIMEOUT_DRAWER_CLOSE = 15_000
+# 前端渲染：视图切换、结果区重绘等纯客户端动作，不涉及网络往返。
+TIMEOUT_UI_RENDER = 10_000
+# 已确认打开后的补充校验；目标已就绪，只做一次快速确认。
+TIMEOUT_UI_SETTLE = 5_000
+# 探测性等待：预期"不该发生"的事（如点击后不应发生导航）。必须短，因为超时
+# 才是正常路径——等长了会把每条用例都拖慢。
+TIMEOUT_NEGATIVE_PROBE = 2_000
+
+
 @dataclass(frozen=True)
 class GeneratedResult:
     """本次新生成并已在 Gallery 展示的结果。"""
@@ -108,6 +128,16 @@ class CartPage:
     )
     STATIC_ASSET_PATH_PREFIXES = ("/cdn/", "/assets/", "/files/")
     ACTIVE_DRAWER_ATTRIBUTE = "data-jujubit-active-drawer"
+
+    # 超时分档定义在模块级（见文件顶部 TIMEOUT_* 常量）：函数签名的默认值
+    # 求值时 self 还不存在，只能引用模块级名字。这里把它们绑成类属性，
+    # 方法体内用 self.XXX 读取，子类需要时也能覆盖。
+    EXTERNAL_SERVICE_TIMEOUT = TIMEOUT_EXTERNAL_SERVICE
+    BUSINESS_ACTION_TIMEOUT = TIMEOUT_BUSINESS_ACTION
+    UI_RENDER_TIMEOUT = TIMEOUT_UI_RENDER
+    UI_SETTLE_TIMEOUT = TIMEOUT_UI_SETTLE
+    NEGATIVE_PROBE_TIMEOUT = TIMEOUT_NEGATIVE_PROBE
+    DRAWER_CLOSE_TIMEOUT = TIMEOUT_DRAWER_CLOSE
     GENERATION_ERRORS = (
         "We couldn’t generate from this image. Please try a different one",
         "Taking longer than expected. Please try again.",
@@ -313,7 +343,7 @@ class CartPage:
                 urljoin(f"{self.base_url}/", "cart/clear.js"),
                 operation="清空购物车时",
                 data={},
-                timeout=30_000,
+                timeout=self.BUSINESS_ACTION_TIMEOUT,
             )
             if not response.ok:
                 raise AssertionError(f"清空购物车失败：HTTP {response.status}")
@@ -328,7 +358,7 @@ class CartPage:
             "get",
             urljoin(f"{self.base_url}/", "cart.js"),
             operation="读取购物车时",
-            timeout=30_000,
+            timeout=self.BUSINESS_ACTION_TIMEOUT,
         )
         assert response.ok, f"读取购物车失败：HTTP {response.status}"
         return response.json()
@@ -365,7 +395,7 @@ class CartPage:
             self.page.wait_for_function(
                 "expectedPath => window.location.pathname === expectedPath",
                 arg=self.CREATOR_PATH,
-                timeout=30_000,
+                timeout=self.BUSINESS_ACTION_TIMEOUT,
             )
         except PlaywrightTimeoutError as error:
             self._raise_if_rate_limited()
@@ -400,7 +430,7 @@ class CartPage:
                         && [...root.querySelectorAll('button')]
                             .some(button => button.textContent.trim() === 'Gallery');
                 }""",
-                timeout=60_000,
+                timeout=self.EXTERNAL_SERVICE_TIMEOUT,
             )
         except PlaywrightTimeoutError as error:
             self._raise_if_rate_limited()
@@ -454,7 +484,9 @@ class CartPage:
         """判断当前抽屉已完成打开动画，并刷新活动节点标记。"""
         return self._refresh_active_drawer()
 
-    def _wait_for_drawer_open(self, timeout: int = 30_000) -> None:
+    def _wait_for_drawer_open(
+        self, timeout: int = TIMEOUT_BUSINESS_ACTION
+    ) -> None:
         """等待半屏购物车真实可见，规避 H5 Portal 动画期间的定位竞态。"""
         deadline = time.monotonic() + max(1, timeout) / 1_000
         stable_reads = 0
@@ -482,7 +514,7 @@ class CartPage:
         """
         return f"[{self.ACTIVE_DRAWER_ATTRIBUTE}] {suffix}"
 
-    def history_total(self, timeout: int = 30_000) -> int:
+    def history_total(self, timeout: int = TIMEOUT_BUSINESS_ACTION) -> int:
         """有界重试读取 Gallery History，避开 H5 Creator 的瞬时重绘。"""
         deadline = time.monotonic() + max(1, timeout) / 1_000
         last_error = "尚未发现 History 数量文案"
@@ -525,7 +557,7 @@ class CartPage:
                 image_source,
                 operation="下载购物车测试图片时",
                 fail_on_status_code=False,
-                timeout=60_000,
+                timeout=self.EXTERNAL_SERVICE_TIMEOUT,
             )
             assert response.ok, (
                 f"购物车测试图片下载失败：HTTP {response.status}，{image_source}"
@@ -548,9 +580,9 @@ class CartPage:
             raise AssertionError(f"购物车测试图片不存在或不是有效 URL：{image_source}")
 
         expect(self.page.get_by_role("button", name="Delete image", exact=True)).to_be_visible(
-            timeout=30_000
+            timeout=self.BUSINESS_ACTION_TIMEOUT
         )
-        expect(self.page.locator("button.jjb-tool--generate")).to_be_enabled(timeout=30_000)
+        expect(self.page.locator("button.jjb-tool--generate")).to_be_enabled(timeout=self.BUSINESS_ACTION_TIMEOUT)
 
     def generate_once(self) -> None:
         """只点击一次 Generate；不重试，避免重复创建计费任务。"""
@@ -591,14 +623,14 @@ class CartPage:
         # 两类资源均已完成后再主动切换，分别验证用户实际可以看到 2D 和 3D。
         self._select_result_view("2D")
         expect(self._visible_result_view("2d")).to_be_visible(
-            timeout=10_000
+            timeout=self.UI_RENDER_TIMEOUT
         )
         image_url = self._generated_image_url(visible_only=True)
         assert image_url, "切换到 2D 后未展示已加载的生成结果图片"
 
         self._select_result_view("3D")
         expect(self._visible_result_view("3d")).to_be_visible(
-            timeout=10_000
+            timeout=self.UI_RENDER_TIMEOUT
         )
         # 资源已经就绪后，再确认切换后的实际 renderer 也对用户可见。H5 会
         # 在切换动画内替换 canvas，不能用一次短暂的 Locator 可见性读取。
@@ -629,7 +661,7 @@ class CartPage:
         )
         self._select_result_view("2D")
         expect(self._visible_result_view("2d")).to_be_visible(
-            timeout=30_000
+            timeout=self.BUSINESS_ACTION_TIMEOUT
         )
         image_url = self._generated_image_url(visible_only=True)
         if not image_url:
@@ -637,8 +669,8 @@ class CartPage:
         add_button = self.page.locator("button:visible").filter(
             has_text=re.compile(r"^Add to Cart$")
         ).first
-        expect(add_button).to_be_visible(timeout=30_000)
-        expect(add_button).to_be_enabled(timeout=30_000)
+        expect(add_button).to_be_visible(timeout=self.BUSINESS_ACTION_TIMEOUT)
+        expect(add_button).to_be_enabled(timeout=self.BUSINESS_ACTION_TIMEOUT)
         return GeneratedResult(history_total, image_url)
 
     def _poll_until(self, predicate, deadline: float, description: str) -> None:
@@ -795,7 +827,9 @@ class CartPage:
             # _poll_until 在下一轮重新读取，而不是把瞬态当成业务失败。
             return False
 
-    def _wait_for_generated_model_visible(self, timeout: int = 30_000) -> None:
+    def _wait_for_generated_model_visible(
+        self, timeout: int = TIMEOUT_BUSINESS_ACTION
+    ) -> None:
         """等待 3D renderer 稳定可见，并在超时后给出明确业务错误。"""
         deadline = time.monotonic() + max(1, timeout) / 1_000
         while time.monotonic() < deadline:
@@ -993,7 +1027,7 @@ class CartPage:
                     self.page.wait_for_function(
                         "beforeUrl => window.location.href !== beforeUrl",
                         arg=before_url,
-                        timeout=2_000,
+                        timeout=self.NEGATIVE_PROBE_TIMEOUT,
                     )
                     return
                 except PlaywrightTimeoutError:
@@ -1017,7 +1051,7 @@ class CartPage:
                     && !button.classList.contains('opacity-50')
                     && !button.disabled
                     && button.getAttribute('aria-disabled') !== 'true')""",
-            timeout=30_000,
+            timeout=self.BUSINESS_ACTION_TIMEOUT,
         )
         self._click_visible_control(
             "#jjb-create-canvas button",
@@ -1054,7 +1088,7 @@ class CartPage:
         expect(add_button).to_be_enabled()
         with self.page.expect_response(
             lambda response: "/cart/add.js" in response.url,
-            timeout=30_000,
+            timeout=self.BUSINESS_ACTION_TIMEOUT,
         ) as response_info:
             self._pace_cart_request()
             # 加购是 AJAX 写入；DOM 点击后仍严格等待 cart/add.js 和抽屉自然打开。
@@ -1075,7 +1109,7 @@ class CartPage:
             # 或伪造事件，否则会把「加购成功但未自动打开抽屉」这个真实缺陷掩盖掉。
             # 用页面上下文原子读取避开 H5 Portal 节点替换的瞬态。
             self._wait_for_drawer_open()
-            expect(self.drawer).to_be_visible(timeout=5_000)
+            expect(self.drawer).to_be_visible(timeout=self.UI_SETTLE_TIMEOUT)
         except AssertionError as error:
             self._record_drawer_open_failure_evidence(add_button)
             cart = self.cart_json()
@@ -1331,12 +1365,12 @@ class CartPage:
         # 后直接 fill。先等待当前可见输入框稳定且可编辑，再发一次真实输入。
         self._wait_for_drawer_quantity_input()
         with self.page.expect_response(
-            lambda response: "/cart/change.js" in response.url, timeout=30_000
+            lambda response: "/cart/change.js" in response.url, timeout=self.BUSINESS_ACTION_TIMEOUT
         ) as response_info:
             self._pace_cart_request()
             quantity_input = self.drawer.locator(".ccd-qty-num")
-            expect(quantity_input).to_be_visible(timeout=30_000)
-            expect(quantity_input).to_be_editable(timeout=30_000)
+            expect(quantity_input).to_be_visible(timeout=self.BUSINESS_ACTION_TIMEOUT)
+            expect(quantity_input).to_be_editable(timeout=self.BUSINESS_ACTION_TIMEOUT)
             quantity_input.fill(str(quantity))
             quantity_input.press("Enter", no_wait_after=True)
         response = response_info.value
@@ -1354,13 +1388,15 @@ class CartPage:
             self.assert_empty_drawer()
         else:
             expect(self.drawer.locator(".ccd-checkout")).to_have_text(
-                f"Checkout ({expected_quantity})", timeout=30_000
+                f"Checkout ({expected_quantity})", timeout=self.BUSINESS_ACTION_TIMEOUT
             )
             expect(quantity_input).to_have_value(str(expected_quantity))
             self.assert_header_badge(expected_quantity)
         return expected_quantity
 
-    def _wait_for_drawer_quantity_input(self, timeout: int = 30_000) -> None:
+    def _wait_for_drawer_quantity_input(
+        self, timeout: int = TIMEOUT_BUSINESS_ACTION
+    ) -> None:
         """等待当前抽屉的数量框完成一次重绘，避免 H5 在旧节点上输入。"""
         deadline = time.monotonic() + max(1, timeout) / 1_000
         last_reason = "未找到可编辑的数量输入框"
@@ -1401,7 +1437,7 @@ class CartPage:
         button = self.drawer.locator(f'.ccd-qty-btn[data-action="{action}"]')
         expect(button).to_be_enabled()
         with self.page.expect_response(
-            lambda response: "/cart/change.js" in response.url, timeout=30_000
+            lambda response: "/cart/change.js" in response.url, timeout=self.BUSINESS_ACTION_TIMEOUT
         ) as response_info:
             self._pace_cart_request()
             self._click_visible_control(
@@ -1425,7 +1461,7 @@ class CartPage:
             self.assert_empty_drawer()
             return
         expect(self.drawer.locator(".ccd-qty-num")).to_have_value(
-            str(expected_quantity), timeout=30_000
+            str(expected_quantity), timeout=self.BUSINESS_ACTION_TIMEOUT
         )
         expect(self.drawer.locator(".ccd-checkout")).to_have_text(
             f"Checkout ({expected_quantity})"
@@ -1484,7 +1520,9 @@ class CartPage:
             # Portal 重绘期间执行上下文可能短暂失效；按未打开处理，由调用方重试。
             return 0
 
-    def _assert_no_open_drawer(self, timeout: int = 15_000) -> None:
+    def _assert_no_open_drawer(
+        self, timeout: int = TIMEOUT_DRAWER_CLOSE
+    ) -> None:
         """确认页面上不存在任何已渲染的打开态抽屉。
 
         用页面内判定而不是 Playwright 的 :visible：Portal 会保留 :visible 仍能
@@ -1525,7 +1563,7 @@ class CartPage:
         self,
         *,
         expected_quantity: Optional[int] = None,
-        timeout: int = 30_000,
+        timeout: int = TIMEOUT_BUSINESS_ACTION,
         stable_reads: int = 2,
     ) -> dict[str, Any]:
         """等待目标数量和汇总连续稳定，再返回一份原子 DOM 快照。"""
@@ -1657,7 +1695,7 @@ class CartPage:
         # 组件会保留一份 display:none 的旧商品节点用于过渡；空态应以可见商品、
         # 服务端数量和空态区域为准，不能把隐藏模板误判为仍有商品。
         expect(self.drawer.locator(".ccd-item:visible")).to_have_count(
-            0, timeout=30_000
+            0, timeout=self.BUSINESS_ACTION_TIMEOUT
         )
         expect(self.drawer.locator(".ccd-empty.is-visible")).to_be_visible()
         expect(self.drawer.locator(".ccd-empty-img")).to_be_visible()
@@ -1676,7 +1714,7 @@ class CartPage:
         assert total_cents >= 0
         self.page.wait_for_function(
             "() => customElements.get('custom-cart-drawer') !== undefined",
-            timeout=30_000,
+            timeout=self.BUSINESS_ACTION_TIMEOUT,
         )
         assert self._refresh_active_drawer(), "包邮边界校验前未找到唯一活动购物车半屏"
         result = self.page.evaluate(
@@ -1703,7 +1741,9 @@ class CartPage:
             f"{(result or {}).get('reason', '页面未返回状态')}"
         )
 
-    def assert_shipping_boundary(self, total_cents: int, timeout: int = 30_000) -> None:
+    def assert_shipping_boundary(
+        self, total_cents: int, timeout: int = TIMEOUT_BUSINESS_ACTION
+    ) -> None:
         """从同一活动抽屉帧读取包邮文案与进度，并等待组件重绘完成。"""
         if total_cents < self.FREE_SHIPPING_THRESHOLD_CENTS:
             remaining = self.FREE_SHIPPING_THRESHOLD_CENTS - total_cents
@@ -1799,7 +1839,7 @@ class CartPage:
         self.open_gallery()
         self._select_result_view("2D")
         expect(self._visible_result_view("2d")).to_be_visible(
-            timeout=10_000
+            timeout=self.UI_RENDER_TIMEOUT
         )
         self._poll_until(
             lambda: bool(self._generated_image_url(visible_only=True)),
@@ -1829,10 +1869,10 @@ class CartPage:
             description="点击 Header Cart",
             allow_navigation=True,
         )
-        self.page.wait_for_url(self.CART_URL, timeout=30_000)
+        self.page.wait_for_url(self.CART_URL, timeout=self.BUSINESS_ACTION_TIMEOUT)
         self._raise_if_rate_limited()
         self.home.close_welcome_popup()
-        expect(self.full_cart).to_be_visible(timeout=30_000)
+        expect(self.full_cart).to_be_visible(timeout=self.BUSINESS_ACTION_TIMEOUT)
 
     def assert_full_cart_page(self, quantity: int) -> None:
         """兼容主流程调用，校验全屏购物车的完整内容。"""
@@ -1868,8 +1908,8 @@ class CartPage:
         )
         expect(self.full_cart.locator(".cc-row-subtotal")).to_contain_text("Subtotal")
         checkout = self.full_cart.locator(".cc-checkout")
-        expect(checkout).to_have_text(f"Checkout ({quantity})", timeout=30_000)
-        expect(checkout).to_be_enabled(timeout=30_000)
+        expect(checkout).to_have_text(f"Checkout ({quantity})", timeout=self.BUSINESS_ACTION_TIMEOUT)
+        expect(checkout).to_be_enabled(timeout=self.BUSINESS_ACTION_TIMEOUT)
         expect(self.full_cart.locator(".cc-disclaimer")).to_have_text(
             "Shipping, taxes, and discount codes calculated at checkout."
         )
@@ -1963,7 +2003,7 @@ class CartPage:
             self.page.wait_for_function(
                 "expectedPath => window.location.pathname === expectedPath",
                 arg=expected_path,
-                timeout=30_000,
+                timeout=self.BUSINESS_ACTION_TIMEOUT,
             )
         except PlaywrightTimeoutError as error:
             self._raise_if_rate_limited()
@@ -1988,9 +2028,9 @@ class CartPage:
         )
         self.home.close_welcome_popup()
         main = self.page.locator("main:visible").first
-        expect(main).to_be_visible(timeout=30_000)
+        expect(main).to_be_visible(timeout=self.BUSINESS_ACTION_TIMEOUT)
         self._expand_checkout_summary(expected.title)
-        self._wait_for_visible_exact_text(expected.title, timeout=30_000)
+        self._wait_for_visible_exact_text(expected.title, timeout=self.BUSINESS_ACTION_TIMEOUT)
         body = self.page.locator("body")
         # Shopify 的 PC 订单摘要可能位于 main 外侧的 aside；body.inner_text 只包含
         # 实际展示的文本，因此可以同时覆盖 PC 和移动端展开后的摘要。
@@ -2009,7 +2049,7 @@ class CartPage:
         self.assert_page_integrity()
 
     def _expand_checkout_summary(
-        self, product_title: str, *, timeout: int = 10_000
+        self, product_title: str, *, timeout: int = TIMEOUT_UI_RENDER
     ) -> None:
         """移动端 Checkout 默认可能折叠订单摘要，存在开关时将其展开。"""
         attempts = max(1, timeout // 100 + 1)
@@ -2293,7 +2333,7 @@ class CartPage:
         self,
         *,
         expected_quantity: int,
-        timeout: int = 30_000,
+        timeout: int = TIMEOUT_BUSINESS_ACTION,
     ) -> dict[str, Any]:
         """原子读取失败请求后的活动抽屉，并等待字段跨两帧保持稳定。"""
         deadline = time.monotonic() + max(1, timeout) / 1_000
@@ -2467,12 +2507,14 @@ class CartPage:
             allow_navigation=True,
         )
         try:
-            self.page.wait_for_url(self.CHECKOUT_URL, timeout=60_000)
+            self.page.wait_for_url(
+                self.CHECKOUT_URL, timeout=self.EXTERNAL_SERVICE_TIMEOUT
+            )
         except PlaywrightTimeoutError as error:
             self._raise_if_rate_limited()
             raise AssertionError(f"{source}点击 Checkout 后未进入结算页：{self.page.url}") from error
         self._raise_if_rate_limited()
-        expect(self.page.locator("main:visible").first).to_be_visible(timeout=30_000)
+        expect(self.page.locator("main:visible").first).to_be_visible(timeout=self.BUSINESS_ACTION_TIMEOUT)
 
     def _assert_shipping_copy(self, locator) -> None:
         text = self._shipping_text(locator)
@@ -2518,7 +2560,7 @@ class CartPage:
         image_selector: str,
         description: str,
         require_right_edge: bool = False,
-        timeout: int = 30_000,
+        timeout: int = TIMEOUT_BUSINESS_ACTION,
     ) -> None:
         """从当前可见购物车的一帧 DOM 中确认唯一商品图片已真实加载。
 
