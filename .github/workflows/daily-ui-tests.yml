@@ -13,7 +13,9 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # write 是为了把 HTML 报告推到 test-reports 分支；仅该分支被写入，
+  # 主分支不受影响（发布步骤显式指定 push origin test-reports）。
+  contents: write
   actions: read
 
 jobs:
@@ -97,6 +99,117 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # 把 HTML 报告发布到 test-reports 分支，得到可直接点开的链接。
+      # 不用 GitHub Pages：本仓库是私有仓库，Pages 需付费套餐且内容公网可访问，
+      # 而报告含站点地址与失败详情。提交到同仓库分支后链接仍受仓库权限保护。
+      - name: 检出 test-reports 分支
+        id: checkout_reports
+        if: always() && steps.report.outputs.run_dir != ''
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: test-reports
+          path: .report-branch
+          # 凭据由 action 管理，不出现在命令行参数里。
+          persist-credentials: true
+
+      - name: 发布报告到 test-reports 分支
+        id: publish_report
+        if: always() && steps.report.outputs.run_dir != ''
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_DIR: ${{ steps.report.outputs.run_dir }}
+          RUN_ID: ${{ steps.report.outputs.run_id }}
+          SUITE: home
+          KEEP: "30"
+        run: |
+          set -euo pipefail
+          # RUN_ID 由 run_all.py 生成的时间戳，这里再校验一次，拒绝路径分隔符。
+          if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "RUN_ID 含非法字符：$RUN_ID" >&2
+            exit 1
+          fi
+          report=$(find "$RUN_DIR" -maxdepth 1 -name '*.html' -print | sort | tail -1)
+          if [[ -z "$report" ]]; then
+            echo "未找到 HTML 报告，跳过发布。" >&2
+            exit 0
+          fi
+
+          branch_dir=.report-branch
+          if [[ ! -d "$branch_dir/.git" ]]; then
+            # 分支还不存在：建孤立分支，不带主分支历史。
+            rm -rf "$branch_dir"
+            mkdir -p "$branch_dir"
+            git -C "$branch_dir" init --initial-branch test-reports
+            git -C "$branch_dir" remote add origin \
+              "${{ github.server_url }}/${{ github.repository }}.git"
+            git -C "$branch_dir" config \
+              http."${{ github.server_url }}/".extraheader \
+              "AUTHORIZATION: basic $(printf 'x-access-token:%s' \
+              "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)"
+          fi
+          git -C "$branch_dir" config user.name 'github-actions[bot]'
+          git -C "$branch_dir" config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+
+          dest="$branch_dir/$SUITE/$RUN_ID"
+          mkdir -p "$dest"
+          cp "$report" "$dest/"
+
+          # 每个套件只保留最近 KEEP 份，避免仓库体积膨胀（单份约 36 KB）。
+          suite_dir="$branch_dir/$SUITE"
+          mapfile -t runs < <(find "$suite_dir" -mindepth 1 -maxdepth 1 -type d \
+            -printf '%f\n' | sort)
+          total=${#runs[@]}
+          if (( total > KEEP )); then
+            for (( i=0; i < total - KEEP; i++ )); do
+              rm -rf "$suite_dir/${runs[i]}"
+              echo "清理旧报告：${runs[i]}"
+            done
+          fi
+
+          # 生成索引页，便于翻历史。
+          {
+            echo "<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
+            echo "<title>JuJuBit 自动化测试报告</title>"
+            echo "<style>body{font-family:system-ui,sans-serif;margin:32px;max-width:900px}"
+            echo "h1{font-size:20px}h2{font-size:16px;margin-top:24px}li{margin:4px 0}</style>"
+            echo "</head><body><h1>JuJuBit 自动化测试报告</h1>"
+            echo "<p>按套件和运行时间归档，每个套件保留最近 ${KEEP} 份。链接受仓库权限保护。</p>"
+            for s in $(find "$branch_dir" -mindepth 1 -maxdepth 1 -type d \
+                -not -name '.*' -printf '%f\n' | sort); do
+              echo "<h2>${s}</h2><ul>"
+              for r in $(find "$branch_dir/$s" -mindepth 1 -maxdepth 1 -type d \
+                  -printf '%f\n' | sort -r); do
+                f=$(find "$branch_dir/$s/$r" -maxdepth 1 -name '*.html' -printf '%f\n' \
+                  | sort | head -1)
+                [[ -z "$f" ]] && continue
+                echo "<li><a href='${{ github.server_url }}/${{ github.repository }}/blob/test-reports/${s}/${r}/${f}?raw=1'>${r}</a></li>"
+              done
+              echo "</ul>"
+            done
+            echo "</body></html>"
+          } > "$branch_dir/index.html"
+
+          git -C "$branch_dir" add -A
+          if git -C "$branch_dir" diff --cached --quiet; then
+            echo "报告无变化，无需提交。"
+          else
+            git -C "$branch_dir" commit -m "发布 home 测试报告 $RUN_ID"
+            git -C "$branch_dir" push origin test-reports
+          fi
+
+          name=$(basename "$report")
+          url="${{ github.server_url }}/${{ github.repository }}/blob/test-reports/$SUITE/$RUN_ID/$name?raw=1"
+          index="${{ github.server_url }}/${{ github.repository }}/blob/test-reports/index.html?raw=1"
+          echo "report_url=$url" >> "$GITHUB_OUTPUT"
+          {
+            echo "- [打开本次 HTML 报告]($url)"
+            echo "- [历史报告索引]($index)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "报告链接：$url"
+
       - name: 推送结果到飞书群
         if: always()
         continue-on-error: true
@@ -107,6 +220,7 @@ jobs:
           REPORT_RUN_ID: ${{ steps.report.outputs.run_id }}
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REPORT_ARTIFACT_URL: ${{ steps.upload_report.outputs.artifact-url }}
+          REPORT_HTML_URL: ${{ steps.publish_report.outputs.report_url }}
           TEST_EXIT_CODE: ${{ steps.suite.outputs.exit_code }}
           TEST_BRANCH: ${{ github.head_ref || github.ref_name }}
           TEST_ACTOR: ${{ github.actor }}

@@ -10,6 +10,7 @@ from pathlib import Path
 from scripts.send_lark_test_report import (
     RATE_LIMIT_PATTERN,
     _business_failures,
+    _failed_case_lines,
     _format_started_at,
     _suite_execution_lines,
     _validate_webhook_url,
@@ -530,6 +531,152 @@ class ExecutedPassRateTests(unittest.TestCase):
         rate = self._rate(card_template(summary, exit_code="0"))
 
         self.assertIn("0.0%（0/0）", rate)
+
+
+class FailedCaseListingTests(unittest.TestCase):
+    """卡片必须直接回答"失败的是什么"，不用点开报告。"""
+
+    def _summary_with(self, *cases) -> dict:
+        return {
+            "total": 21,
+            "passed": 21 - len(cases),
+            "failed": len(cases),
+            "errors": 0,
+            "skipped": 0,
+            "rate_limited": 0,
+            "rate_limited_skipped": 0,
+            "rate_limited_failures": 0,
+            "ordinary_skipped": 0,
+            "duration_seconds": 1800,
+            "modules": [],
+            "failed_cases": list(cases),
+            "cases": [],
+        }
+
+    def test_no_failures_renders_nothing(self) -> None:
+        self.assertEqual(_failed_case_lines(self._summary_with()), "")
+
+    def test_case_name_and_detail_are_listed(self) -> None:
+        lines = _failed_case_lines(
+            self._summary_with(
+                {
+                    "name": "test_cart_tc05_header_opens_full_cart[pc]",
+                    "module": "购物车",
+                    "detail": "AssertionError: Gallery 加购接口失败：HTTP 503",
+                }
+            )
+        )
+
+        self.assertIn("test_cart_tc05_header_opens_full_cart[pc]", lines)
+        self.assertIn("购物车", lines)
+        self.assertIn("HTTP 503", lines)
+
+    def test_long_list_is_truncated_with_pointer_to_report(self) -> None:
+        cases = [
+            {"name": f"test_{index}", "module": "首页", "detail": "失败"}
+            for index in range(12)
+        ]
+
+        lines = _failed_case_lines(self._summary_with(*cases), limit=8)
+
+        self.assertIn("另有 4 条失败", lines)
+        self.assertIn("HTML 报告", lines)
+
+    def test_failed_cases_are_extracted_from_junit(self) -> None:
+        detail = "AssertionError: Gallery 加购接口失败：HTTP 503"
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "results.xml"
+            path.write_text(
+                '<?xml version="1.0"?>'
+                '<testsuite name="pytest" tests="2" failures="1" errors="0"'
+                ' skipped="0" time="60">'
+                '<testcase classname="python_playwright.tests.test_cart"'
+                ' name="test_cart_tc05_header_opens_full_cart[pc]" time="30">'
+                f'<failure message="{detail}">{detail}</failure></testcase>'
+                '<testcase classname="python_playwright.tests.test_cart"'
+                ' name="test_ok[pc]" time="10"/></testsuite>',
+                encoding="utf-8",
+            )
+            summary = read_results(str(path))
+
+        self.assertEqual(len(summary["failed_cases"]), 1)
+        entry = summary["failed_cases"][0]
+        self.assertIn("tc05", entry["name"])
+        self.assertEqual(entry["module"], "购物车")
+        self.assertIn("503", entry["detail"])
+
+    def test_rate_limited_failures_are_not_listed_as_business_failures(self) -> None:
+        """429 频控不是业务失败，不应出现在失败用例列表里。"""
+        detail = "站点访问频控（HTTP 429）：jujubit.ai/cart.js 未完成。"
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "results.xml"
+            path.write_text(
+                '<?xml version="1.0"?>'
+                '<testsuite name="pytest" tests="1" failures="1" errors="0"'
+                ' skipped="0" time="10">'
+                '<testcase classname="python_playwright.tests.test_cart"'
+                ' name="test_add[pc]" time="5">'
+                f'<failure message="{detail}">{detail}</failure></testcase>'
+                "</testsuite>",
+                encoding="utf-8",
+            )
+            summary = read_results(str(path))
+
+        self.assertEqual(summary["failed_cases"], [])
+
+    def test_card_shows_failure_section_and_report_button(self) -> None:
+        summary = self._summary_with(
+            {
+                "name": "test_cart_tc05_header_opens_full_cart[pc]",
+                "module": "购物车",
+                "detail": "AssertionError: Gallery 加购接口失败：HTTP 503",
+            }
+        )
+        report_url = (
+            "https://github.com/o/r/blob/test-reports/cart/20260916/report.html?raw=1"
+        )
+
+        card = card_template(
+            summary,
+            "https://github.com/o/r/actions/runs/1",
+            "https://github.com/o/r/artifacts/1",
+            report_url,
+            exit_code="1",
+        )
+
+        rendered = json.dumps(card, ensure_ascii=False)
+        self.assertIn("失败用例", rendered)
+        self.assertIn("tc05", rendered)
+        # HTML 报告按钮必须存在且为主按钮（排查时第一个要点的）。
+        buttons = [
+            button
+            for element in card["card"]["elements"]
+            if element.get("tag") == "action"
+            for button in element["actions"]
+        ]
+        report_buttons = [b for b in buttons if b["url"] == report_url]
+        self.assertEqual(len(report_buttons), 1)
+        self.assertEqual(report_buttons[0]["type"], "primary")
+
+    def test_card_omits_report_button_when_publish_failed(self) -> None:
+        """发布步骤失败时链接为空，卡片仍应可用，只是没有该按钮。"""
+        card = card_template(
+            self._summary_with(),
+            "https://github.com/o/r/actions/runs/1",
+            "",
+            "",
+            exit_code="0",
+        )
+
+        buttons = [
+            button
+            for element in card["card"]["elements"]
+            if element.get("tag") == "action"
+            for button in element["actions"]
+        ]
+        labels = [button["text"]["content"] for button in buttons]
+        self.assertNotIn("打开 HTML 报告", labels)
+        self.assertIn("查看运行日志", labels)
 
 
 class WebhookUrlValidationTests(unittest.TestCase):

@@ -78,6 +78,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-xml", default=os.getenv("RESULTS_XML", ""))
     parser.add_argument("--run-url", default=os.getenv("GITHUB_RUN_URL", ""))
     parser.add_argument("--artifact-url", default=os.getenv("REPORT_ARTIFACT_URL", ""))
+    parser.add_argument(
+        "--report-html-url", default=os.getenv("REPORT_HTML_URL", "")
+    )
     parser.add_argument("--run-id", default=os.getenv("REPORT_RUN_ID", ""))
     parser.add_argument("--exit-code", default=os.getenv("TEST_EXIT_CODE", ""))
     parser.add_argument(
@@ -132,7 +135,23 @@ def _empty_summary() -> Dict[str, Any]:
         "duration_seconds": 0.0,
         "started_at": "",
         "modules": [],
+        "failed_cases": [],
     }
+
+
+def _case_detail(case: ElementTree.Element, *, max_length: int = 120) -> str:
+    """取失败用例的一行错误摘要，供卡片直接展示。"""
+    for child in case:
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag not in {"failure", "error"}:
+            continue
+        text = (child.get("message") or child.text or "").strip()
+        if not text:
+            continue
+        # 折叠换行与多余空白；pytest 的 longrepr 往往很长。
+        flat = re.sub(r"\s+", " ", text)
+        return flat[:max_length]
+    return ""
 
 
 def _elements(root: ElementTree.Element, name: str) -> Iterable[ElementTree.Element]:
@@ -259,6 +278,17 @@ def read_results(results_xml: str) -> Dict[str, Any]:
                 module["rate_limited_failures"] += 1
         elif outcome == "skipped":
             module["ordinary_skipped"] += 1
+
+        # 记录业务失败的用例名，让卡片能直接回答"失败的是什么"，
+        # 不必点开报告或翻 Actions 日志。已确认的 429 频控不算业务失败。
+        if outcome in {"failed", "errors"} and not rate_limited:
+            summary["failed_cases"].append(
+                {
+                    "name": case.get("name", "") or "未知用例",
+                    "module": module_name,
+                    "detail": _case_detail(case),
+                }
+            )
 
     suites = list(_elements(root, "testsuite"))
     summary["duration_seconds"] = _suite_duration(root, cases)
@@ -396,6 +426,31 @@ def _suite_execution_lines(
     )
 
 
+def _failed_case_lines(summary: Dict[str, Any], *, limit: int = 8) -> str:
+    """生成“失败用例”列表，每行是用例名加一句错误摘要。
+
+    卡片原先只显示"业务失败 1"，必须点开报告才知道失败的是什么。这里直接给出
+    用例名与原因；超过 limit 条时截断并提示看报告，避免卡片过长。
+    """
+    cases = summary.get("failed_cases") or []
+    if not cases:
+        return ""
+    lines = []
+    for case in cases[:limit]:
+        name = _display_value(str(case.get("name", "")), max_length=80)
+        module = str(case.get("module", "")).strip()
+        prefix = f"[{module}] " if module and module != "其他" else ""
+        detail = str(case.get("detail", "")).strip()
+        line = f"- {prefix}`{name}`"
+        if detail:
+            line += f"\n  {detail}"
+        lines.append(line)
+    remaining = len(cases) - limit
+    if remaining > 0:
+        lines.append(f"- 另有 {remaining} 条失败，详见 HTML 报告")
+    return "\n".join(lines)
+
+
 def _module_lines(summary: Dict[str, Any]) -> str:
     """生成“模块结果”列表；首页固定排在购物车之前。"""
     modules = summary.get("modules") or []
@@ -443,6 +498,7 @@ def card_template(
     summary: Dict[str, Any],
     run_url: str = "",
     artifact_url: str = "",
+    report_html_url: str = "",
     exit_code: str = "",
     run_id: str = "",
     branch: str = "",
@@ -540,12 +596,23 @@ def card_template(
         },
     ]
     actions = []
+    # HTML 报告直链放在最前且用 primary：它是排查失败时最先要看的东西，
+    # 不用再下载 artifact 或翻 Actions 页面。
+    if report_html_url:
+        actions.append(
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "打开 HTML 报告"},
+                "type": "primary",
+                "url": report_html_url,
+            }
+        )
     if run_url:
         actions.append(
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "查看运行与报告"},
-                "type": "primary",
+                "text": {"tag": "plain_text", "content": "查看运行日志"},
+                "type": "primary" if not report_html_url else "default",
                 "url": run_url,
             }
         )
@@ -553,7 +620,7 @@ def card_template(
         actions.append(
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "下载 HTML 报告与录屏"},
+                "text": {"tag": "plain_text", "content": "下载报告与录屏"},
                 "type": "default",
                 "url": artifact_url,
             }
@@ -595,6 +662,20 @@ def card_template(
             },
         },
     ]
+    # 直接列出失败用例名与错误摘要：卡片原先只给"业务失败 1"，还得点开报告
+    # 才知道是哪条。这是排查时第一个要看的信息。
+    failure_lines = _failed_case_lines(summary)
+    if failure_lines:
+        elements.insert(
+            2,
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"**失败用例**\n{failure_lines}",
+                },
+            },
+        )
     if rate_limited:
         elements.append(
             {
@@ -739,6 +820,7 @@ def main() -> int:
         summary,
         args.run_url,
         args.artifact_url,
+        args.report_html_url,
         args.exit_code,
         args.run_id,
         args.branch,
