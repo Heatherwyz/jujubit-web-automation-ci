@@ -647,16 +647,21 @@ class FailedCaseListingTests(unittest.TestCase):
         rendered = json.dumps(card, ensure_ascii=False)
         self.assertIn("失败用例", rendered)
         self.assertIn("tc05", rendered)
-        # HTML 报告按钮必须存在且为主按钮（排查时第一个要点的）。
         buttons = [
             button
             for element in card["card"]["elements"]
             if element.get("tag") == "action"
             for button in element["actions"]
         ]
+        # 运行页是主按钮：Job Summary 在那里，是唯一能在浏览器直接读的结论。
+        # GitHub 对仓库内 HTML 强制 text/plain + nosniff，点开只有源码。
+        primary = [b for b in buttons if b["type"] == "primary"]
+        self.assertEqual(len(primary), 1)
+        self.assertIn("运行摘要", primary[0]["text"]["content"])
+        # HTML 报告仍提供，但措辞是"下载"而非"打开"。
         report_buttons = [b for b in buttons if b["url"] == report_url]
         self.assertEqual(len(report_buttons), 1)
-        self.assertEqual(report_buttons[0]["type"], "primary")
+        self.assertIn("下载", report_buttons[0]["text"]["content"])
 
     def test_card_omits_report_button_when_publish_failed(self) -> None:
         """发布步骤失败时链接为空，卡片仍应可用，只是没有该按钮。"""
@@ -675,8 +680,9 @@ class FailedCaseListingTests(unittest.TestCase):
             for button in element["actions"]
         ]
         labels = [button["text"]["content"] for button in buttons]
-        self.assertNotIn("打开 HTML 报告", labels)
-        self.assertIn("查看运行日志", labels)
+        self.assertNotIn("下载 HTML 报告", labels)
+        # 运行摘要按钮必须仍在：Job Summary 是主要阅读入口。
+        self.assertIn("查看运行摘要", labels)
 
 
 class WebhookUrlValidationTests(unittest.TestCase):

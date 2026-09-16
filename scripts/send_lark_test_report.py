@@ -136,7 +136,19 @@ def _empty_summary() -> Dict[str, Any]:
         "started_at": "",
         "modules": [],
         "failed_cases": [],
+        "unfinished_cases": [],
     }
+
+
+def _skip_reason(case: ElementTree.Element, *, max_length: int = 120) -> str:
+    """取跳过原因。pytest 把它放在 skipped 节点的 message 属性里。"""
+    for child in case:
+        if child.tag.rsplit("}", 1)[-1] != "skipped":
+            continue
+        text = (child.get("message") or child.text or "").strip()
+        if text:
+            return re.sub(r"\s+", " ", text)[:max_length]
+    return ""
 
 
 def _case_detail(case: ElementTree.Element, *, max_length: int = 120) -> str:
@@ -287,6 +299,18 @@ def read_results(results_xml: str) -> Dict[str, Any]:
                     "name": case.get("name", "") or "未知用例",
                     "module": module_name,
                     "detail": _case_detail(case),
+                }
+            )
+        # 未完成同样要能追溯：跳过原因决定了这一轮该不该重跑，
+        # 以及是环境问题还是已登记的已知问题。
+        elif outcome == "skipped" or (
+            outcome in {"failed", "errors"} and rate_limited
+        ):
+            summary["unfinished_cases"].append(
+                {
+                    "name": case.get("name", "") or "未知用例",
+                    "module": module_name,
+                    "detail": _case_detail(case) or _skip_reason(case),
                 }
             )
 
@@ -598,22 +622,24 @@ def card_template(
     actions = []
     # HTML 报告直链放在最前且用 primary：它是排查失败时最先要看的东西，
     # 不用再下载 artifact 或翻 Actions 页面。
-    if report_html_url:
-        actions.append(
-            {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "打开 HTML 报告"},
-                "type": "primary",
-                "url": report_html_url,
-            }
-        )
+    # 运行页放第一个且为主按钮：Job Summary 在那里，是唯一能在浏览器直接读的
+    # 完整结论（GitHub 对仓库内 HTML 强制 text/plain + nosniff，不渲染）。
     if run_url:
         actions.append(
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "查看运行日志"},
-                "type": "primary" if not report_html_url else "default",
+                "text": {"tag": "plain_text", "content": "查看运行摘要"},
+                "type": "primary",
                 "url": run_url,
+            }
+        )
+    if report_html_url:
+        actions.append(
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "下载 HTML 报告"},
+                "type": "default",
+                "url": report_html_url,
             }
         )
     if artifact_url:

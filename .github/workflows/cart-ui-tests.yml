@@ -278,14 +278,30 @@ jobs:
           fi
 
           name=$(basename "$report")
-          url="${{ github.server_url }}/${{ github.repository }}/blob/test-reports/$SUITE/$RUN_ID/$name?raw=1"
-          index="${{ github.server_url }}/${{ github.repository }}/blob/test-reports/index.html?raw=1"
-          echo "report_url=$url" >> "$GITHUB_OUTPUT"
+          # 用 raw.githubusercontent.com：blob/...?raw=1 在私有仓库里会 404。
+          # 注意 GitHub 对仓库内 HTML 强制 text/plain + nosniff，浏览器只显示
+          # 源码不渲染，所以这个链接是"下载后本地打开"，可读结论看 Job Summary。
+          raw_base="https://raw.githubusercontent.com/${{ github.repository }}/test-reports"
+          url="$raw_base/$SUITE/$RUN_ID/$name"
+          index="$raw_base/index.html"
           {
-            echo "- [打开本次 HTML 报告]($url)"
-            echo "- [历史报告索引]($index)"
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "report_url=$url"
+            echo "index_url=$index"
+          } >> "$GITHUB_OUTPUT"
           echo "报告链接：$url"
+
+      # 把结论渲染进 Job Summary：这是唯一能在浏览器里直接读的地方
+      # （仓库内 HTML 不渲染，私有仓库又不能用 Pages）。
+      - name: 写入运行摘要
+        if: always() && steps.report.outputs.results_xml != ''
+        continue-on-error: true
+        env:
+          RESULTS_XML: ${{ steps.report.outputs.results_xml }}
+          SUITE_LABEL: 购物车 UI 回归
+          REPORT_RUN_ID: ${{ steps.report.outputs.run_id }}
+          REPORT_HTML_URL: ${{ steps.publish_report.outputs.report_url }}
+          REPORT_INDEX_URL: ${{ steps.publish_report.outputs.index_url }}
+        run: python scripts/write_job_summary.py >> "$GITHUB_STEP_SUMMARY"
 
       - name: 推送结果到飞书群
         if: always()
