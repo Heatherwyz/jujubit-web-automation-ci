@@ -142,14 +142,10 @@ jobs:
 
           branch_dir=.report-branch
           if [[ ! -d "$branch_dir/.git" ]]; then
-            # 分支还不存在：建孤立分支，不带主分支历史。
+            # 分支不存在时上一步的 checkout 会失败并可能留下空目录；这里重建。
             rm -rf "$branch_dir"
             mkdir -p "$branch_dir"
-            # 不用 git init --initial-branch：旧版 git 会静默忽略该参数并落回
-            # master，随后 push origin test-reports 报 "src refspec does not
-            # match any"。显式 checkout -B 保证分支名正确。
             git -C "$branch_dir" init
-            git -C "$branch_dir" checkout -B test-reports
             git -C "$branch_dir" remote add origin \
               "${{ github.server_url }}/${{ github.repository }}.git"
             git -C "$branch_dir" config \
@@ -157,6 +153,11 @@ jobs:
               "AUTHORIZATION: basic $(printf 'x-access-token:%s' \
               "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)"
           fi
+          # 无条件确保当前分支名是 test-reports。
+          # 上一版把它放在 if 里，而分支不存在时 checkout action 已留下 .git，
+          # 条件判假 -> 整段被跳过 -> git 停在默认 master -> push 报
+          # "src refspec test-reports does not match any"。两次真实运行都栽在这。
+          git -C "$branch_dir" checkout -B test-reports
           git -C "$branch_dir" config user.name 'github-actions[bot]'
           git -C "$branch_dir" config user.email \
             '41898282+github-actions[bot]@users.noreply.github.com'
