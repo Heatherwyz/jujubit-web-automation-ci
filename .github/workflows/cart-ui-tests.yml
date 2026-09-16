@@ -163,6 +163,10 @@ jobs:
       - name: 上传 HTML 报告、失败截图和录像
         id: upload_report
         if: always() && steps.report.outputs.run_dir != ''
+        # artifact 存储配额打满时这一步会失败（2026-09-16 出现过）。它只是备份
+        # 通道——报告已发布到 test-reports 分支且不占配额，所以不因此让整个
+        # Job 失败，避免把"配额不足"误报成"测试失败"。
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           # 时间戳使每次报告和录像下载项具有唯一名称。
@@ -210,7 +214,11 @@ jobs:
           if [[ ! -d "$branch_dir/.git" ]]; then
             rm -rf "$branch_dir"
             mkdir -p "$branch_dir"
-            git -C "$branch_dir" init --initial-branch test-reports
+            # 不用 git init --initial-branch：旧版 git 会静默忽略该参数并落回
+            # master，随后 push origin test-reports 报 "src refspec does not
+            # match any"。显式 checkout -B 保证分支名正确。
+            git -C "$branch_dir" init
+            git -C "$branch_dir" checkout -B test-reports
             git -C "$branch_dir" remote add origin \
               "${{ github.server_url }}/${{ github.repository }}.git"
             git -C "$branch_dir" config \
