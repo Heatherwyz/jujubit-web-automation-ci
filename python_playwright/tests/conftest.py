@@ -23,6 +23,7 @@ from python_playwright.cart_cases import (
     CART_CASES_BY_FUNCTION,
     DAILY_H5_CASE_FUNCTIONS,
 )
+from python_playwright.membership_cases import MEMBERSHIP_CASE_TITLES
 from python_playwright.pages.home_page import (
     RATE_LIMIT_DETAIL_PATTERN,
     HomePage,
@@ -71,10 +72,16 @@ CASE_TITLES = {
     "test_ci_smoke_generate_add_and_checkout": (
         "CART-SMOKE: 单一登录上下文完成生成、加购、全屏购物车与 Checkout"
     ),
+    "test_membership_html_contract": "会员 HTML 契约",
+    "test_membership_known_price_mismatch": (
+        "会员 HTML 契约：已知价格不一致（Premium 线上与确认值不符）"
+    ),
     **{
         function_name: case.report_title
         for function_name, case in CART_CASES_BY_FUNCTION.items()
     },
+    # 会员用例标题由 membership_cases.py 统一维护，新增用例只改那一处。
+    **MEMBERSHIP_CASE_TITLES,
 }
 
 class SiteRequestPacer:

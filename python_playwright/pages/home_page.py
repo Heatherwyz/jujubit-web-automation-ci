@@ -63,12 +63,15 @@ class HomePage:
             ".newsletter-popup-v2:visible, .newsletter-popup--original:visible"
         )
 
-    def open(self) -> None:
-        """打开首页，并在站点返回 429 时限速等待后重试。
+    def open(self, path: str = "") -> None:
+        """打开首页（或 base_url 下的指定路径），并在站点返回 429 时限速等待后重试。
 
-        HTTP 429 是站点对高频访问的频控信号，不是首页功能断言失败。默认模式
+        HTTP 429 是站点对高频访问的频控信号，不是页面功能断言失败。默认模式
         会自动退避重试；带 ``--pw-manual-verification`` 时会显示浏览器，允许
         使用者手动完成网站要求的验证后再继续，脚本不会自动绕过验证。
+
+        ``path`` 是可选的站内路径（如 ``/pages/vip-program``），供会员等其它
+        页面复用同一套退避与频控熔断逻辑。不传时保持原有打开首页的行为。
         """
         existing_limit = getattr(self.config, "_jujubit_site_rate_limited", "")
         if existing_limit:
@@ -77,11 +80,12 @@ class HomePage:
         manual_verification = self.config.getoption("--pw-manual-verification")
         # 人工模式在首次 429 时立即交给使用者确认；普通模式才按退避策略重试。
         total_attempts = 2 if manual_verification else retries + 1
+        target_url = urljoin(f"{self.base_url}/", path.lstrip("/")) if path else self.base_url
         for attempt in range(total_attempts):
             # 显式重新打开页面后需要重新观察异步弹窗出现窗口。
             self._popup_checked_url = ""
             self._pace_site_request()
-            response = self.page.goto(self.base_url, wait_until="commit")
+            response = self.page.goto(target_url, wait_until="commit")
             if response is not None and response.status == 429:
                 if manual_verification and attempt == 0:
                     self._wait_for_manual_verification()

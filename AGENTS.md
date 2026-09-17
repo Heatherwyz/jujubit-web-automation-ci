@@ -7,14 +7,23 @@
 
 | 层 | 命令 | 条数 | 耗时 | 访问站点 | 副作用 |
 | --- | --- | --- | --- | --- | --- |
-| 离线单测 | `.venv/bin/python -m pytest -q` | 289 | 3 秒 | 否 | 无 |
-| HTML 契约 | `.venv/bin/python -m pytest -c pytest-playwright.ini -m html_contract -q` | 9 | 2 秒 | 一次 GET | 无 |
-| 首页 UI | `.venv/bin/python run_all.py --platform pc`（或 `h5` / 省略跑双端） | 62 | 10-18 分钟 | 是 | 无 |
+| 离线单测 | `.venv/bin/python -m pytest -q` | 359 | 3 秒 | 否 | 无 |
+| HTML 契约 | `.venv/bin/python -m pytest -c pytest-playwright.ini -m html_contract -q` | 15 | 3 秒 | 两次 GET | 无 |
+| 首页 UI | `.venv/bin/python run_all.py --platform pc`（或 `h5` / 省略跑双端） | 71 | 10-18 分钟 | 是 | 无 |
+| 会员 | `.venv/bin/python run_all.py --membership-only --platform pc` | 92 | 15-20 分钟 | 是 | 无（支付只拉起表单，不付款） |
 | 购物车 | `.venv/bin/python run_all.py --cart-daily` | 32 | 30-40 分钟 | 是 | **真实登录、创建生成任务、写入购物车** |
 
 要点：
 
 - 购物车层有外部副作用（会在测试账号下真实生成模型并加购），执行前说明清楚。
+- **会员层的支付用例只走到拉起 Airwallex 表单**（断言弹窗出现、SDK 挂载、
+  卡号输入框可见），不填卡、不点 Pay Now、不产生真实扣款。页面对象刻意不提供
+  填卡与提交方法，`tests/test_membership_suite_wiring.py` 会守住这条边界。
+- 会员的管理页与支付拉起用例需要登录态（`membership_session` marker）。
+  缺登录态时它们会如实报"未完成"而不是失败——线上未登录点 Get 会跳 Shopify
+  登录页，半屏支付不会出现。
+- 默认回归（`run_all.py` 不带参数）**不含**会员层，需显式 `--membership`
+  或 `--membership-only`。
 - 单跑某一条：`pytest -c pytest-playwright.ini "路径::函数名" --pw-platform pc`
 - UI 层耗时长，用后台执行并轮询，不要让命令超时。
 - **改动 fixture 或分层结构后，必须跑一次"浏览器层 + 契约层混跑"**（71 条 = 首页

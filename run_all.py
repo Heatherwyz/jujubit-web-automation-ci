@@ -18,6 +18,10 @@ RUN_DIR = ROOT / "artifacts" / "runs" / RUN_ID
 REPORT_NAME = f"jujubit-report-{RUN_ID}.html"
 REPORT_PATH = RUN_DIR / REPORT_NAME
 
+# 默认回归的 marker 表达式：排除购物车登录态用例（有外部副作用）与会员模块
+# （需显式 --membership 才跑）。写成常量便于单测直接断言口径。
+DEFAULT_MARKER_EXPRESSION = "not cart_session and not membership"
+
 
 def _parse_args():
     """解析面向使用者的一键运行参数。"""
@@ -61,6 +65,19 @@ def _parse_args():
         ),
     )
     parser.add_argument(
+        "--membership",
+        action="store_true",
+        help=(
+            "执行会员模块用例（付费墙、Membership 管理页、引流入口、弹窗与埋点）。"
+            "支付相关只走到拉起 Airwallex 表单，不填卡不付款、不产生真实扣款。"
+        ),
+    )
+    parser.add_argument(
+        "--membership-only",
+        action="store_true",
+        help="只执行会员模块用例，不执行首页与购物车。",
+    )
+    parser.add_argument(
         "--cart-suite",
         choices=("smoke", "daily", "full"),
         help=(
@@ -102,6 +119,10 @@ def main() -> int:
         raise SystemExit(
             "--include-cart、--cart-smoke、--cart-smoke-only、--cart-only、--cart-daily 只能选择一个。"
         )
+    if args.membership and args.membership_only:
+        raise SystemExit("--membership 与 --membership-only 只能选择一个。")
+    if args.membership_only and (args.cart_suite or any(selected_cart_modes)):
+        raise SystemExit("--membership-only 不能与任何购物车参数同时使用。")
     if args.cart_request_interval < 0:
         raise SystemExit("--cart-request-interval 不能小于 0。")
     # 每次运行使用独立目录，报告中的相对视频链接不会被下一次执行覆盖。
@@ -143,7 +164,11 @@ def main() -> int:
     if args.manual_verification:
         # 人机验证必须由使用者在可见浏览器中完成，脚本只负责等待并继续执行。
         command.append("--pw-manual-verification")
-    if args.cart_smoke:
+    if args.membership_only:
+        # 只跑会员模块（membership marker）：付费墙匿名用例 + 需登录态的
+        # 管理页与支付拉起用例。支付只走到 Airwallex 表单可见，不填卡不付款。
+        command.extend(["-m", "membership"])
+    elif args.cart_smoke:
         # 综合 Smoke 只跑 1 条单上下文主链路，避免多个登录上下文连续撞 WAF。
         command.extend(["--pw-cart-suite", "smoke", "-m", "not cart_session or cart_smoke"])
     elif args.cart_smoke_only:
@@ -171,9 +196,13 @@ def main() -> int:
     elif args.include_cart:
         # 完整回归保留原有 15 条逻辑用例；独立 CI Smoke 不重复计入 30 条记录。
         command.extend(["--pw-cart-suite", "full", "-m", "not cart_smoke"])
+    elif args.membership:
+        # 默认回归追加会员模块：排除购物车登录态，保留首页与会员。
+        command.extend(["-m", "not cart_session"])
     elif not args.include_cart:
         # 购物车主流程会真实创建生成任务；默认回归不产生这类外部副作用。
-        command.extend(["-m", "not cart_session"])
+        # 未显式指定 --membership 时也不跑会员模块。
+        command.extend(["-m", DEFAULT_MARKER_EXPRESSION])
     result = subprocess.run(command, cwd=ROOT)
     # Playwright 必须先关闭上下文才能写完视频；保留已重命名的失败视频即可。
     raw_video_dir = RUN_DIR / "failure-videos" / "raw"
