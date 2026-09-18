@@ -8,7 +8,7 @@ crontab / LaunchAgent 调用本脚本。``subprocess.run`` 只接收字面量参
 飞书自定义机器人 Webhook 只能接收结果卡片，不能反向触发 GitHub；所以本脚本
 不读写飞书。跑完后现有工作流仍会把结果推到飞书群。
 
-购物车套件与 CI 约定一致：周日早班 ``full``，其余班次 ``daily``。
+购物车定时一律 ``daily``；完整 ``full`` 不走这条入口。
 """
 
 from __future__ import annotations
@@ -63,10 +63,8 @@ def resolve_shift(now: datetime, requested: str) -> str:
     return "morning" if now.hour < 12 else "evening"
 
 
-def cart_suite_for(now: datetime, shift: str) -> str:
-    """周日早班完整回归，其余班次每日分层。"""
-    if shift == "morning" and now.weekday() == 6:
-        return "full"
+def cart_suite_for(_now: datetime, _shift: str) -> str:
+    """定时入口固定每日分层；完整回归不从这里触发。"""
     return "daily"
 
 
@@ -143,30 +141,6 @@ def dispatch_cart_daily(*, dry_run: bool) -> None:
     )
 
 
-def dispatch_cart_full(*, dry_run: bool) -> None:
-    """触发购物车完整回归。"""
-    print("gh workflow run cart-ui-tests.yml --ref main -f suite=full")
-    if dry_run:
-        return
-    _check(
-        subprocess.run(
-            [
-                "gh",
-                "workflow",
-                "run",
-                "cart-ui-tests.yml",
-                "--ref",
-                "main",
-                "-f",
-                "suite=full",
-            ],
-            shell=False,
-            check=False,
-        ),
-        "gh workflow run cart-ui-tests.yml --ref main -f suite=full",
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     """按班次触发三个工作流；失败时非零退出，便于 crontab 发现。"""
     args = parse_args(argv)
@@ -180,10 +154,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         dispatch_offline(dry_run=args.dry_run)
         dispatch_home(dry_run=args.dry_run)
-        if suite == "full":
-            dispatch_cart_full(dry_run=args.dry_run)
-        else:
-            dispatch_cart_daily(dry_run=args.dry_run)
+        dispatch_cart_daily(dry_run=args.dry_run)
     except (ValueError, RuntimeError, OSError) as error:
         print(f"准时触发失败：{error}", file=sys.stderr)
         return 1

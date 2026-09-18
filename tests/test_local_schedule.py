@@ -54,14 +54,12 @@ class ShiftAndSuiteTests(unittest.TestCase):
         self.assertEqual(resolve_shift(morning, "auto"), "morning")
         self.assertEqual(resolve_shift(evening, "auto"), "evening")
 
-    def test_sunday_morning_uses_full_cart_suite(self) -> None:
+    def test_every_shift_uses_daily_cart_suite(self) -> None:
         sunday_morning = parse_now("2026-09-20T09:00")
-        self.assertEqual(sunday_morning.weekday(), 6)
-        self.assertEqual(cart_suite_for(sunday_morning, "morning"), "full")
-
-    def test_sunday_evening_and_weekday_use_daily(self) -> None:
         sunday_evening = parse_now("2026-09-20T21:00")
         friday_morning = parse_now("2026-09-18T09:00")
+        self.assertEqual(sunday_morning.weekday(), 6)
+        self.assertEqual(cart_suite_for(sunday_morning, "morning"), "daily")
         self.assertEqual(cart_suite_for(sunday_evening, "evening"), "daily")
         self.assertEqual(cart_suite_for(friday_morning, "morning"), "daily")
 
@@ -84,7 +82,7 @@ class DispatchDryRunTests(unittest.TestCase):
         )
         self.assertNotIn("suite=full", text)
 
-    def test_sunday_morning_dry_run_prints_full_cart(self) -> None:
+    def test_sunday_morning_dry_run_also_prints_daily_cart(self) -> None:
         stdout = StringIO()
         with patch("sys.stdout", stdout):
             code = dispatch_main(
@@ -92,11 +90,12 @@ class DispatchDryRunTests(unittest.TestCase):
             )
         self.assertEqual(code, 0)
         text = stdout.getvalue()
-        self.assertIn("购物车套件=full", text)
+        self.assertIn("购物车套件=daily", text)
         self.assertIn(
-            "gh workflow run cart-ui-tests.yml --ref main -f suite=full",
+            "gh workflow run cart-ui-tests.yml --ref main -f suite=daily",
             text,
         )
+        self.assertNotIn("suite=full", text)
 
 
 class LaunchAgentPlistTests(unittest.TestCase):

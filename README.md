@@ -150,32 +150,53 @@ Object，最后仍由 pytest 和 `run_all.py` 执行回归、生成报告。
 
 ## GitHub Actions 定时运行
 
-三个工作流的**准时入口是本机 LaunchAgent**：每天北京时间 09:00 和 21:00 调用
-`gh workflow run` 触发 `workflow_dispatch`。GitHub 自己的 `schedule` 对本仓库长期
-迟到 4–5 小时，只作为本机没开机时的备份；迟到到达时若 11 小时内已有同工作流的
-手动触发，测试 job 会跳过，避免购物车同一班次跑两遍。
+三个工作流的**准时入口建议用飞书妙搭**：每天北京时间 09:00 和 21:00 各发三次
+`workflow_dispatch`。GitHub 自己的 `schedule` 对本仓库长期迟到 4–5 小时，只作为
+备份；迟到到达时若 11 小时内已有同工作流的手动触发，测试 job 会跳过，避免购物车
+同一班次跑两遍。
 
-飞书群里的自定义机器人 Webhook **只能收结果卡片，不能反向触发 GitHub**。结果仍
-由现有工作流推到飞书，触发必须走本机 `gh`。
+飞书群里的自定义机器人 Webhook **只能收结果卡片，不能反向触发 GitHub**。触发要
+用妙搭（或本机 `gh`）调 GitHub API；结果仍由现有工作流推到飞书。
 
 两个 UI 工作流还会在每次运行后上传 HTML、截图、失败录像和 `results.xml`：
 
 | 工作流 | 自动执行 | 手动入口 | 用途 |
 | --- | --- | --- | --- |
 | `JuJuBit 首页 UI Tests` | 每天北京时间 09:00 与 21:00 | **Actions → JuJuBit 首页 UI Tests → Run workflow** | 只执行首页 PC/H5 用例，不读取购物车登录态。 |
-| `JuJuBit 购物车 UI Tests` | 每天北京时间 09:00 与 21:00；仅周日 09:00 执行 `full`，其余班次执行 `daily` | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | `daily` 为 PC 全量 15 条 + H5 关键 6 条，共 21 条；`full` 为 PC/H5 各 15 条，共 30 条；手动可选择 `smoke`、`daily` 或 `full`。 |
+| `JuJuBit 购物车 UI Tests` | 每天北京时间 09:00 与 21:00，固定 `daily` | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | `daily` 为 PC 全量 15 条 + H5 关键 6 条，共 21 条；`full` 为 PC/H5 各 15 条，共 30 条，只在手动选择时执行。 |
 | `离线检查` | 每天北京时间 09:00 与 21:00，以及每个 PR 和推送到 `main` | **Actions → 离线检查 → Run workflow** | 离线单测、套件收集与 fixture 静态检查，不访问站点。 |
 
 两个访问站点的工作流共享同一个并发队列 `jujubit-site-ui-tests`，任何时刻只允许一个 Runner
 访问站点。09:00 和 21:00 两个班次里首页与购物车会同时触发，后到的那个自动排队，等前一个跑完再开始，
 不会并行登录同一个测试账号。离线检查不产生站点请求，用独立并发组，不参与这个队列。
 
-购物车晚班固定执行 `daily`：`full` 会真实生成模型并写入购物车，一天跑两轮完整回归会让账号副作用翻倍。
-需要额外跑完整回归时手动选择 `full`。
+定时购物车固定 `daily`。`full` 会真实生成模型并写入购物车，需要时在 Actions 页面手动选择。
 
 两个 UI 工作流会分别发送“首页”和“购物车”的飞书结果卡片与独立 Artifact，这是为了让失败录像和模块统计更清晰。
 
-### 在本机安装 09:00 / 21:00 准时触发
+### 用飞书妙搭做 09:00 / 21:00 准时触发
+
+建两条定时任务，时区 `Asia/Shanghai`：每天 09:00、每天 21:00。每条任务里按顺序发 3 个
+HTTP POST（离线 → 首页 → 购物车）。Token 用只开本仓库 Actions 写权限的 GitHub PAT，
+放在妙搭连接器密钥里，不要写进群机器人 Webhook。
+
+共同请求头：
+
+```text
+Accept: application/vnd.github+json
+Authorization: Bearer <PAT>
+X-GitHub-Api-Version: 2022-11-28
+```
+
+| 顺序 | URL | Body |
+| --- | --- | --- |
+| 1 | `https://api.github.com/repos/Heatherwyz/jujubit-web-automation/actions/workflows/offline-checks.yml/dispatches` | `{"ref":"main"}` |
+| 2 | `https://api.github.com/repos/Heatherwyz/jujubit-web-automation/actions/workflows/daily-ui-tests.yml/dispatches` | `{"ref":"main"}` |
+| 3 | `https://api.github.com/repos/Heatherwyz/jujubit-web-automation/actions/workflows/cart-ui-tests.yml/dispatches` | `{"ref":"main","inputs":{"suite":"daily"}}` |
+
+两条任务的三次请求完全相同。首页和购物车会排队，不会并行打站点。
+
+### 本机 LaunchAgent（可选备份）
 
 这台 Mac 必须已经 `gh auth login`，且 token 带 `repo` 和 `workflow` 权限（当前
 `gh auth status` 已满足）。电脑在触发时刻需要开机且已登录用户会话；睡眠中的
@@ -341,9 +362,9 @@ RESULTS_XML=artifacts/runs/<时间戳>/results.xml \
 完整执行会在报告中生成 30 条购物车记录。用例覆盖 Create、Gallery 的 2D/3D 结果、半屏与
 全屏购物车、Checkout、角标、数量与金额联动、包邮临界值、空态、视图一致性和失败请求保护。
 
-GitHub 定时任务默认使用 `daily` 分层：PC 保留 15 条完整覆盖，H5 保留 CART-01、02、03、06、10、15
-六条关键主链路，共 21 条。H5 的其余 9 条深度兼容性用例不会被删除，每周日 09:00 由 `full` 自动覆盖，也可在发布前
-或页面改动后手动选择 `full` 执行。HTML 报告顶部会明确显示本次套件和收集数量，避免把未运行的深度用例
+GitHub 定时任务固定使用 `daily` 分层：PC 保留 15 条完整覆盖，H5 保留 CART-01、02、03、06、10、15
+六条关键主链路，共 21 条。H5 的其余 9 条深度兼容性用例不会被删除，发布前或页面改动后可手动选择
+`full` 执行。HTML 报告顶部会明确显示本次套件和收集数量，避免把未运行的深度用例
 误看成失败或跳过。
 
 本地可直接运行：
