@@ -3,9 +3,11 @@ name: JuJuBit 首页 UI Tests
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions 的 cron 使用 UTC；01:00 UTC 即中国标准时间每日 09:00。
+    # 备份触发：本仓库 GitHub cron 长期迟到 4–5 小时。准时入口是本机
+    # LaunchAgent 在北京时间 09:00 / 21:00 调用 workflow_dispatch。
+    # 若本机已触发，下面的 gate job 会跳过这次迟到的 schedule。
+    # 01:00 UTC = 北京时间 09:00；13:00 UTC = 21:00。
     - cron: "0 1 * * *"
-    # 13:00 UTC 即中国标准时间每日 21:00，与早班一起形成早晚各一轮。
     - cron: "0 13 * * *"
 
 # 首页和购物车工作流共用同一个并发组，任何时刻只允许一个 Runner 访问站点。
@@ -21,7 +23,44 @@ permissions:
   actions: read
 
 jobs:
+  gate:
+    name: 迟到 schedule 去重
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.skip.outputs.skip }}
+    steps:
+      - name: 拉取测试代码
+        uses: actions/checkout@v4
+
+      - name: 判断是否跳过迟到的 GitHub cron
+        id: skip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_EVENT_NAME}" != "schedule" ]]; then
+            echo "非 schedule 事件，不去重。"
+            exit 0
+          fi
+          json="${RUNNER_TEMP}/dispatch-runs.json"
+          if ! gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/daily-ui-tests.yml/runs?event=workflow_dispatch&per_page=30" \
+            > "$json"; then
+            echo "查询 workflow_dispatch 失败，fail-open 不跳过。" >&2
+            exit 0
+          fi
+          python3 scripts/should_skip_late_schedule.py \
+            --workflow-file daily-ui-tests.yml \
+            --runs-json "$json" \
+            --ref "${GITHUB_REF_NAME}" \
+            >> "$GITHUB_OUTPUT"
+
   test:
+    needs: gate
+    # gate 失败时 skip 为空，仍跑测试（fail-open）；本机已准时触发则跳过。
+    if: always() && needs.gate.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:

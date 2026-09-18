@@ -150,7 +150,14 @@ Object，最后仍由 pytest 和 `run_all.py` 执行回归、生成报告。
 
 ## GitHub Actions 定时运行
 
-项目包含三个 GitHub Actions 工作流。三者都在每天北京时间 09:00 和 21:00 各自动执行一轮；
+三个工作流的**准时入口是本机 LaunchAgent**：每天北京时间 09:00 和 21:00 调用
+`gh workflow run` 触发 `workflow_dispatch`。GitHub 自己的 `schedule` 对本仓库长期
+迟到 4–5 小时，只作为本机没开机时的备份；迟到到达时若 11 小时内已有同工作流的
+手动触发，测试 job 会跳过，避免购物车同一班次跑两遍。
+
+飞书群里的自定义机器人 Webhook **只能收结果卡片，不能反向触发 GitHub**。结果仍
+由现有工作流推到飞书，触发必须走本机 `gh`。
+
 两个 UI 工作流还会在每次运行后上传 HTML、截图、失败录像和 `results.xml`：
 
 | 工作流 | 自动执行 | 手动入口 | 用途 |
@@ -167,6 +174,39 @@ Object，最后仍由 pytest 和 `run_all.py` 执行回归、生成报告。
 需要额外跑完整回归时手动选择 `full`。
 
 两个 UI 工作流会分别发送“首页”和“购物车”的飞书结果卡片与独立 Artifact，这是为了让失败录像和模块统计更清晰。
+
+### 在本机安装 09:00 / 21:00 准时触发
+
+这台 Mac 必须已经 `gh auth login`，且 token 带 `repo` 和 `workflow` 权限（当前
+`gh auth status` 已满足）。电脑在触发时刻需要开机且已登录用户会话；睡眠中的
+Mac 会把 LaunchAgent 延后到醒来，所以长期挂机或合盖充电更稳。
+
+先预览将要执行的命令（不真正触发）：
+
+```bash
+/usr/bin/python3 scripts/dispatch_scheduled_workflows.py --dry-run --now 2026-09-18T09:00
+```
+
+安装用户级 LaunchAgent（不需要 sudo）：
+
+```bash
+/usr/bin/python3 scripts/install_local_schedule.py install
+```
+
+卸载：
+
+```bash
+/usr/bin/python3 scripts/install_local_schedule.py uninstall
+```
+
+日志写在 `~/Library/Logs/com.jujubit.dispatch-scheduled-workflows.log`。plist
+只含本仓库路径和 `gh` 的 PATH，不写入 token。
+
+如果不用 LaunchAgent，也可以自己加 crontab（同样要求这台机器在点上开机）：
+
+```cron
+0 9,21 * * * /usr/bin/python3 /Users/wyz/pro/jujubit-web-automation/scripts/dispatch_scheduled_workflows.py >> /tmp/jujubit-dispatch.log 2>&1
+```
 
 ### 第一次推送到 GitHub
 

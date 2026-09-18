@@ -14,24 +14,62 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    # GitHub Actions 的 cron 使用 UTC；01:00 UTC = 中国标准时间 09:00，
-    # 13:00 UTC = 21:00。离线层不访问站点、无副作用，早晚各跑一轮可以在
-    # 没有推送的日子也守住依赖漂移（如 Playwright、pytest 版本变化）。
+    # 备份触发：准时入口是本机 LaunchAgent 的 workflow_dispatch。
+    # 01:00 UTC = 北京时间 09:00；13:00 UTC = 21:00。
     - cron: "0 1 * * *"
     - cron: "0 13 * * *"
 
 # 与访问站点的工作流不共用并发组：本工作流不产生任何站点请求，
 # 不需要为避免撞 WAF 而排队。
+# event_name 进组名，避免迟到的 schedule 把本机 workflow_dispatch 取消掉
+# （本工作流 cancel-in-progress 对 PR/push 仍为 true）。
 concurrency:
-  group: jujubit-offline-checks-${{ github.ref }}
-  cancel-in-progress: true
+  group: jujubit-offline-checks-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  gate:
+    name: 迟到 schedule 去重
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.skip.outputs.skip }}
+    steps:
+      - name: 拉取测试代码
+        uses: actions/checkout@v4
+
+      - name: 判断是否跳过迟到的 GitHub cron
+        id: skip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_EVENT_NAME}" != "schedule" ]]; then
+            echo "非 schedule 事件，不去重。"
+            exit 0
+          fi
+          json="${RUNNER_TEMP}/dispatch-runs.json"
+          if ! gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/offline-checks.yml/runs?event=workflow_dispatch&per_page=30" \
+            > "$json"; then
+            echo "查询 workflow_dispatch 失败，fail-open 不跳过。" >&2
+            exit 0
+          fi
+          python3 scripts/should_skip_late_schedule.py \
+            --workflow-file offline-checks.yml \
+            --runs-json "$json" \
+            --ref "${GITHUB_REF_NAME}" \
+            >> "$GITHUB_OUTPUT"
+
   offline:
     name: 离线单测与契约规则
+    needs: gate
+    if: always() && needs.gate.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

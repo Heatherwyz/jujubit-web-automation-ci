@@ -13,15 +13,13 @@ on:
           - daily
           - full
   schedule:
-    # GitHub Actions 的 cron 使用 UTC。01:00 UTC = 中国标准时间 09:00，
-    # 13:00 UTC = 21:00，早晚各一轮，与首页回归同一时刻触发。
-    # 两个工作流共用下方并发组，因此不会同时访问站点，后到的自动排队。
-    #
-    # 周一至周六早班执行每日分层（21 条）。
+    # 备份触发：准时入口是本机 LaunchAgent 的 workflow_dispatch。
+    # GitHub cron 对本仓库长期迟到 4–5 小时；gate job 会在本机已触发时跳过。
+    # 01:00 UTC = 北京时间 09:00；13:00 UTC = 21:00。
+    # 周一至周六早班、每天晚班执行每日分层（21 条）。
     - cron: "0 1 * * 1-6"
-    # 周日早班执行完整 30 条；晚班仍走分层，避免一天两次完整回归的账号副作用。
+    # 周日早班完整 30 条；晚班仍走分层，避免一天两次完整回归的账号副作用。
     - cron: "0 1 * * 0"
-    # 每天晚班统一执行每日分层。
     - cron: "0 13 * * *"
 
 # 与每日首页回归串行执行，避免两个 Runner 从不同出口同时访问同一登录账号。
@@ -36,7 +34,45 @@ permissions:
   actions: read
 
 jobs:
+  gate:
+    name: 迟到 schedule 去重
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.skip.outputs.skip }}
+    steps:
+      - name: 拉取测试代码
+        uses: actions/checkout@v4
+
+      - name: 判断是否跳过迟到的 GitHub cron
+        id: skip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_EVENT_NAME}" != "schedule" ]]; then
+            echo "非 schedule 事件，不去重。"
+            exit 0
+          fi
+          json="${RUNNER_TEMP}/dispatch-runs.json"
+          if ! gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/cart-ui-tests.yml/runs?event=workflow_dispatch&per_page=30" \
+            > "$json"; then
+            echo "查询 workflow_dispatch 失败，fail-open 不跳过。" >&2
+            exit 0
+          fi
+          python3 scripts/should_skip_late_schedule.py \
+            --workflow-file cart-ui-tests.yml \
+            --runs-json "$json" \
+            --ref "${GITHUB_REF_NAME}" \
+            >> "$GITHUB_OUTPUT"
+
   test:
+    needs: gate
+    # gate 失败时 skip 为空，仍跑测试（fail-open）；本机已准时触发则跳过，
+    # 避免购物车同一班次真实生成、写入账号两遍。
+    if: always() && needs.gate.outputs.skip != 'true'
     runs-on: ubuntu-latest
     # 完整购物车回归包含生成任务；周日早班执行完整套件，其余班次执行分层套件。
     timeout-minutes: 150
