@@ -13,6 +13,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+  schedule:
+    # GitHub Actions 的 cron 使用 UTC；01:00 UTC = 中国标准时间 09:00，
+    # 13:00 UTC = 21:00。离线层不访问站点、无副作用，早晚各跑一轮可以在
+    # 没有推送的日子也守住依赖漂移（如 Playwright、pytest 版本变化）。
+    - cron: "0 1 * * *"
+    - cron: "0 13 * * *"
 
 # 与访问站点的工作流不共用并发组：本工作流不产生任何站点请求，
 # 不需要为避免撞 WAF 而排队。

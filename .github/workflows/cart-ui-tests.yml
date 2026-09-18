@@ -13,12 +13,16 @@ on:
           - daily
           - full
   schedule:
-    # GitHub Actions 的 cron 使用 UTC；02:00 UTC 即中国标准时间每天 10:00。
-    # 与 09:00 的首页回归错开一小时；若首页尚未结束，会由下方并发队列自动等待。
-    # 周一至周六执行每日分层；周日由下一条计划替代，避免一天运行两次。
-    - cron: "0 2 * * 1-6"
-    # 每周日 03:00 UTC（中国标准时间 11:00）执行完整 30 条。
-    - cron: "0 3 * * 0"
+    # GitHub Actions 的 cron 使用 UTC。01:00 UTC = 中国标准时间 09:00，
+    # 13:00 UTC = 21:00，早晚各一轮，与首页回归同一时刻触发。
+    # 两个工作流共用下方并发组，因此不会同时访问站点，后到的自动排队。
+    #
+    # 周一至周六早班执行每日分层（21 条）。
+    - cron: "0 1 * * 1-6"
+    # 周日早班执行完整 30 条；晚班仍走分层，避免一天两次完整回归的账号副作用。
+    - cron: "0 1 * * 0"
+    # 每天晚班统一执行每日分层。
+    - cron: "0 13 * * *"
 
 # 与每日首页回归串行执行，避免两个 Runner 从不同出口同时访问同一登录账号。
 concurrency:
@@ -34,7 +38,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # 完整购物车回归包含生成任务；周一至周六执行分层套件，周日执行完整套件。
+    # 完整购物车回归包含生成任务；周日早班执行完整套件，其余班次执行分层套件。
     timeout-minutes: 150
     env:
       TZ: Asia/Shanghai
@@ -85,11 +89,13 @@ jobs:
         id: suite
         shell: bash
         run: |
-          # 周一至周六执行 21 条分层购物车回归（PC 15 条 + H5 关键 6 条）；
-          # 周日执行完整 30 条。手动触发可选择 smoke、daily、full。
+          # 只有周日早班（0 1 * * 0）执行完整 30 条，其余定时班次都执行 21 条
+          # 分层回归（PC 15 条 + H5 关键 6 条）。晚班固定分层：完整回归会真实
+          # 生成模型并写入购物车，一天跑两次会让账号副作用翻倍。
+          # 手动触发仍由 inputs.suite 决定。
           set +e
           if [[ "${{ github.event_name }}" == "schedule" ]]; then
-            if [[ "${{ github.event.schedule }}" == "0 3 * * 0" ]]; then
+            if [[ "${{ github.event.schedule }}" == "0 1 * * 0" ]]; then
               suite="full"
             else
               suite="daily"
