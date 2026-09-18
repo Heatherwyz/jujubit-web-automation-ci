@@ -1,0 +1,194 @@
+name: JuJuBit 会员 UI Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 与首页、购物车串行执行（共用并发组）。
+    # 01:00 UTC = 北京时间 09:00；13:00 UTC = 21:00。
+    - cron: "0 1 * * *"
+    - cron: "0 13 * * *"
+
+# 与首页和购物车共用并发组，任何时刻只允许一个 Runner 访问站点。
+concurrency:
+  group: jujubit-site-ui-tests
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: 拉取测试代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-playwright.txt
+
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-playwright.txt
+          python -m playwright install --with-deps chromium
+
+      - name: 记录测试开始时间
+        id: test_meta
+        shell: bash
+        run: echo "started_at=$(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$GITHUB_OUTPUT"
+
+      - name: 执行会员 UI 回归
+        id: suite
+        shell: bash
+        run: |
+          # 会员模块：付费墙、Membership 管理页、引流入口、弹窗、埋点。
+          # 支付相关只走到拉起 Airwallex 表单，不填卡不付款，无副作用。
+          # 需登录态的用例（membership_session）缺态时报未完成而不是失败。
+          set +e
+          python run_all.py --membership-only
+          exit_code=$?
+          echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: 定位本次报告
+        id: report
+        if: always()
+        shell: bash
+        run: |
+          run_dir=$(find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort | tail -n 1 || true)
+          if [[ -z "$run_dir" ]]; then
+            echo "未找到本次运行目录：artifacts/runs" >&2
+            exit 1
+          fi
+          run_dir=${run_dir%/}
+          run_id=$(basename "$run_dir")
+          echo "run_dir=${run_dir}" >> "$GITHUB_OUTPUT"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          echo "results_xml=${run_dir}/results.xml" >> "$GITHUB_OUTPUT"
+
+      - name: 上传 HTML 报告、失败截图和录像
+        id: upload_report
+        if: always() && steps.report.outputs.run_dir != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: jujubit-membership-report-${{ steps.report.outputs.run_id }}
+          path: ${{ steps.report.outputs.run_dir }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 检出 test-reports 分支
+        id: checkout_reports
+        if: always() && steps.report.outputs.run_dir != ''
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: test-reports
+          path: .report-branch
+          persist-credentials: true
+
+      - name: 发布报告到 test-reports 分支
+        id: publish_report
+        if: always() && steps.report.outputs.run_dir != ''
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_DIR: ${{ steps.report.outputs.run_dir }}
+          RUN_ID: ${{ steps.report.outputs.run_id }}
+          SUITE: membership
+          KEEP: "30"
+        run: |
+          set -euo pipefail
+          if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "RUN_ID 含非法字符：$RUN_ID" >&2; exit 1
+          fi
+          report=$(find "$RUN_DIR" -maxdepth 1 -name '*.html' -print | sort | tail -1)
+          if [[ -z "$report" ]]; then
+            echo "未找到 HTML 报告，跳过发布。" >&2; exit 0
+          fi
+          branch_dir=.report-branch
+          if [[ ! -d "$branch_dir/.git" ]]; then
+            rm -rf "$branch_dir"; mkdir -p "$branch_dir"
+            git -C "$branch_dir" init
+            git -C "$branch_dir" remote add origin \
+              "${{ github.server_url }}/${{ github.repository }}.git"
+            git -C "$branch_dir" config \
+              http."${{ github.server_url }}/".extraheader \
+              "AUTHORIZATION: basic $(printf 'x-access-token:%s' \
+              "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)"
+          fi
+          git -C "$branch_dir" checkout -B test-reports
+          git -C "$branch_dir" config user.name 'github-actions[bot]'
+          git -C "$branch_dir" config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+          dest="$branch_dir/$SUITE/$RUN_ID"; mkdir -p "$dest"
+          cp "$report" "$dest/"
+          suite_dir="$branch_dir/$SUITE"
+          mapfile -t runs < <(find "$suite_dir" -mindepth 1 -maxdepth 1 -type d \
+            -printf '%f\n' | sort)
+          total=${#runs[@]}
+          if (( total > KEEP )); then
+            for (( i=0; i < total - KEEP; i++ )); do
+              rm -rf "$suite_dir/${runs[i]}"
+            done
+          fi
+          git -C "$branch_dir" add -A
+          if git -C "$branch_dir" diff --cached --quiet; then
+            echo "报告无变化。"
+          else
+            git -C "$branch_dir" commit -m "发布 membership 测试报告 $RUN_ID"
+            git -C "$branch_dir" push origin test-reports
+          fi
+          name=$(basename "$report")
+          raw_base="https://raw.githubusercontent.com/${{ github.repository }}/test-reports"
+          {
+            echo "report_url=$raw_base/$SUITE/$RUN_ID/$name"
+            echo "index_url=$raw_base/index.html"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 写入运行摘要
+        if: always() && steps.report.outputs.results_xml != ''
+        continue-on-error: true
+        env:
+          RESULTS_XML: ${{ steps.report.outputs.results_xml }}
+          SUITE_LABEL: 会员 UI 回归
+          REPORT_RUN_ID: ${{ steps.report.outputs.run_id }}
+          REPORT_HTML_URL: ${{ steps.publish_report.outputs.report_url }}
+          REPORT_INDEX_URL: ${{ steps.publish_report.outputs.index_url }}
+        run: python scripts/write_job_summary.py >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 推送结果到飞书群
+        if: always()
+        continue-on-error: true
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+          LARK_WEBHOOK_SECRET: ${{ secrets.LARK_WEBHOOK_SECRET }}
+          RESULTS_XML: ${{ steps.report.outputs.results_xml }}
+          REPORT_RUN_ID: ${{ steps.report.outputs.run_id }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT_ARTIFACT_URL: ${{ steps.upload_report.outputs.artifact-url }}
+          REPORT_HTML_URL: ${{ steps.publish_report.outputs.report_url }}
+          TEST_EXIT_CODE: ${{ steps.suite.outputs.exit_code }}
+          TEST_BRANCH: ${{ github.head_ref || github.ref_name }}
+          TEST_ACTOR: ${{ github.actor }}
+          TEST_COMMIT: ${{ github.sha }}
+          TEST_STARTED_AT: ${{ steps.test_meta.outputs.started_at }}
+        run: python scripts/send_lark_test_report.py
+
+      - name: 保持 GitHub 运行结果与测试结果一致
+        if: always()
+        shell: bash
+        run: |
+          exit_code="${{ steps.suite.outputs.exit_code }}"
+          if [[ -z "$exit_code" ]]; then exit_code=1; fi
+          exit "$exit_code"

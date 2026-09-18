@@ -55,9 +55,13 @@ RATE_LIMIT_PATTERN = re.compile(
     """,
     re.I | re.X,
 )
-MODULE_ORDER = {"首页": 0, "购物车": 1, "其他": 99}
+MODULE_ORDER = {"首页": 0, "会员": 1, "购物车": 2, "其他": 99}
 MODULE_PATTERNS = {
     "首页": re.compile(r"(?:^|[^a-z0-9])(?:home|homepage)(?:$|[^a-z0-9])|首页", re.I),
+    "会员": re.compile(
+        r"(?:^|[^a-z0-9])(?:membership|member|mem\d)(?:$|[^a-z0-9])|会员",
+        re.I,
+    ),
     "购物车": re.compile(
         r"(?:^|[^a-z0-9])(?:cart|shopping[_-]?cart|shoppingcart)(?:$|[^a-z0-9])|购物车",
         re.I,
@@ -194,10 +198,10 @@ def module_for_case(case: ElementTree.Element) -> str:
     case_name = case.get("name", "").lower()
     # 文件/类所属模块优先：例如首页里的“购物车入口”用例即使函数名含 cart，
     # 仍然应归在“首页”；只有真正的购物车文件/类才归入“购物车”。
-    for module in ("首页", "购物车"):
+    for module in ("首页", "会员", "购物车"):
         if _matches_module(owner, module):
             return module
-    for module in ("购物车", "首页"):
+    for module in ("购物车", "会员", "首页"):
         if _matches_module(case_name, module):
             return module
     # 当前仓库只有首页用例；无法识别的新文件单独列为“其他”，避免错误并入首页。
