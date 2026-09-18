@@ -532,6 +532,7 @@ def test_mem38_popup_join_button(home, page, test_platform):
     )
 
 
+@pytest.mark.membership_session
 def test_mem39_payment_failed_popup(home, page, test_platform):
     """MEM-39: 支付失败弹窗。"""
     pytest.skip("需要触发支付失败——当前暂未实现")
