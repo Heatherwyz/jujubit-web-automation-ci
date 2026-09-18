@@ -176,10 +176,13 @@ class MembershipPage:
     # ---- 实验开关 ----
 
     def inject_experiment(self, name: str = "show_vip_banner", *, enable: bool = True) -> None:
-        """注入 Statsig 实验开关（从提测单获取的方式）。"""
+        """注入 Statsig 实验开关。
+
+        不设 _shop_mode=test：那会让前端走测试环境链路，与线上行为不一致。
+        只覆盖 Statsig 实验分组即可。
+        """
         value = "true" if enable else "false"
         self.page.evaluate(f"""() => {{
-            localStorage.setItem('_shop_mode', 'test');
             localStorage.setItem('_statsig_override',
                 JSON.stringify({{"{name}": {{"enable": {value}}}}}));
         }}""")

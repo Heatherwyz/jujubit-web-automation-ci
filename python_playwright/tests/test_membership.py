@@ -315,6 +315,7 @@ def test_mem18_active_cancelled_status(home, page, test_platform):
     pytest.skip("需要已取消订阅的测试账号")
 
 
+@pytest.mark.membership_session
 def test_mem19_basic_no_expiry(home, page, test_platform):
     """MEM-19: Basic 不展示到期时间。"""
     mp = MembershipPage(page, home.base_url, home.config)
