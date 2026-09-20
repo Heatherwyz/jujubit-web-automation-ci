@@ -68,8 +68,10 @@ MEMBERSHIP_EMPTY_STATES = {
     "billing_history": "No billing history yet.",
 }
 
-# 管理页 Tab 顺序
-PROFILE_TAB_ORDER = ("PROFILE", "ORDERS", "MEMBERSHIP")
+# 会员页顶部的视图切换（2026-09-20 线上实测）。
+# 会员页只有这两个 role=tab；Profile / Orders 属于 Shopify 托管账户页
+# （shopify.com/<shop_id>/account/...），不在同一个页面上，不能混在一个断言里。
+PROFILE_TAB_ORDER = ("MEMBERSHIP", "PLANS")
 
 # 管理页按钮矩阵
 PRIMARY_BUTTONS = {
@@ -92,6 +94,9 @@ PAYWALL_BUTTON_STATES = {
 TIMEOUT_BUSINESS = 30_000
 TIMEOUT_SDK_LOAD = 45_000
 TIMEOUT_UI_RENDER = 10_000
+# 会员 offer 弹窗的渲染延迟：2026-09-20 实测 domcontentloaded 后约 9 秒才挂上，
+# 留足余量，否则点击前检查不到它，等点 Get 时才出现并拦住事件。
+TIMEOUT_OFFER_RENDER = 14_000
 
 PAYWALL_PATH = "/pages/vip-program"
 AIRWALLEX_HOSTS = ("checkout.airwallex.com", "checkout-demo.airwallex.com")
@@ -135,6 +140,9 @@ SEL_OFFER_BENEFIT_VALUE = ".jjb-membership-offer__benefit-value"
 # 管理页
 SEL_OVERVIEW = ".jjb-membership-overview"
 SEL_OVERVIEW_SIGNED_OUT = ".jjb-membership-overview__signed-out"
+# Billing History 折叠区：默认收起，展开前 content 恒为空串。
+SEL_OVERVIEW_BILLING_CONTENT = ".jjb-membership-overview__billing-content"
+SEL_OVERVIEW_BILLING_CARD = ".jjb-membership-overview__billing-card"
 
 # 实验就绪标记：主题注入实验后会加这个 class，可用于等待
 SEL_EXPERIMENT_READY = ".jjb-membership-experiment-ready"
@@ -164,11 +172,16 @@ class MembershipPage:
         self.home.close_welcome_popup()
 
     def open_membership_tab(self) -> None:
-        """从个人中心进入 Membership 管理页。"""
+        """切到会员页的 MEMBERSHIP 视图。
+
+        该页签是 role=tab 的按钮，不是 a[href*="membership"]——实测
+        a[href*=membership] 在页面上 0 命中，旧选择器会恒假。
+        登录态页面的开屏会员 offer（.jjb-membership-offer）会盖住页签，
+        必须先关掉，否则点击被拦截（2026-09-20 实测）。
+        """
         self.home.close_welcome_popup()
-        tab = self.page.locator(
-            'a[href*="membership"], button:has-text("MEMBERSHIP")'
-        ).first
+        self.close_membership_popup(observe_timeout=TIMEOUT_OFFER_RENDER)
+        tab = self.page.get_by_role("tab", name="Membership").first
         expect(tab).to_be_visible(timeout=TIMEOUT_UI_RENDER)
         tab.click()
         self.page.wait_for_timeout(2000)
@@ -204,7 +217,16 @@ class MembershipPage:
             self.page.wait_for_timeout(300)
 
     def switch_cycle(self, cycle: str) -> None:
-        """切换 Monthly / Yearly。线上是 .jjb-membership-paywall__toggle 内的按钮。"""
+        """切换 Monthly / Yearly。线上是 .jjb-membership-paywall__toggle 内的按钮。
+
+        两种弹窗都要关，它们是不同的遮罩：
+        - newsletter 弹窗（.newsletter-popup-v2）：匿名访问时出现，
+          MEM-02 曾因此报 __image intercepts pointer events。
+        - 会员 offer 弹窗（.jjb-membership-offer）：登录态下约 9 秒后
+          渲染成 900px 遮罩，MEM-12 曾卡在这里。
+        """
+        self.home.close_popup_before_click()
+        self.close_membership_popup(observe_timeout=TIMEOUT_OFFER_RENDER)
         label = "Yearly" if cycle.lower() == "yearly" else "Monthly"
         toggle = self.page.locator(SEL_PAYWALL_TOGGLE)
         expect(toggle.first).to_be_visible(timeout=TIMEOUT_UI_RENDER)
@@ -244,8 +266,15 @@ class MembershipPage:
         return btn.is_enabled()
 
     def click_get(self, tier: str) -> None:
-        """点击指定档位的 Get/Upgrade 按钮。"""
+        """点击指定档位的 Get/Upgrade 按钮。
+
+        除 newsletter 弹窗外还要关会员 offer 弹窗：登录态下开屏的
+        .jjb-membership-offer 会盖住卡片按钮，点击被拦截后只报
+        Locator.click timeout，看不出真实原因（2026-09-20 实测）。
+        """
         self.home.close_popup_before_click()
+        # offer 弹窗在加载后约 9 秒才渲染，必须观察等待而不是立即检查。
+        self.close_membership_popup(observe_timeout=TIMEOUT_OFFER_RENDER)
         btn = self.card_button(tier)
         expect(btn).to_be_enabled(timeout=TIMEOUT_UI_RENDER)
         btn.click()
@@ -277,79 +306,205 @@ class MembershipPage:
         layer = self.page.locator(SEL_CHECKOUT)
         return bool(layer.count()) and layer.first.is_visible()
 
-    def wait_for_payment_form(self, timeout: int = TIMEOUT_SDK_LOAD) -> None:
-        """等待半屏支付表单（Airwallex SDK）加载完成。
+    def on_airwallex_hosted_page(self) -> bool:
+        """当前是否已跳到 Airwallex 全屏托管支付页。
 
-        断言边界：弹窗出现 → loading 消失 → SDK 挂载点有内容。
-        不填卡、不点 Pay Now、不产生真实扣款。
+        2026-09-20 线上实测：登录态下点 Get Pro 会直接跳
+        checkout.airwallex.com/pay，站内半屏容器不出现。两种形态都算
+        "支付已拉起"，断言不能只认半屏。
         """
-        # 1) 半屏弹窗容器必须先出现
-        try:
-            self.page.wait_for_selector(SEL_CHECKOUT, timeout=timeout // 3)
-        except PlaywrightTimeoutError:
-            raise AssertionError(
-                f"半屏支付弹窗未出现（选择器 {SEL_CHECKOUT}）"
-            ) from None
+        url = (self.page.url or "").lower()
+        return any(host in url for host in AIRWALLEX_HOSTS)
 
-        # 2) 等 SDK 挂载：loading 消失或 mount/form-host 内出现 iframe
+    def wait_for_payment_form(self, timeout: int = TIMEOUT_SDK_LOAD) -> None:
+        """等待支付表单（Airwallex SDK）加载完成。
+
+        线上有两种形态，都停在"表单可见"即止，不填卡不点 Pay Now：
+        - 站内半屏弹窗 .jjb-membership-checkout
+        - 跳转 Airwallex 全屏托管页 checkout.airwallex.com/pay
+        """
+        # 判定用可见性而不是 count()：.jjb-membership-checkout 始终存在于 DOM
+        # （隐藏态 count() 恒为 1，且预置了 'Pro Membership'、'$19.90' 模板
+        # 文案），用 count() 会立刻误判成"半屏已出现"并读到假数据。
+        #
+        # 跳转检测必须贯穿整个等待过程，不能只在开头查一次：线上点 Get 后是
+        # 整页跳转到 Airwallex，跳转途中对旧 DOM 求值会直接抛
+        # "Execution context was destroyed"（2026-09-20 实测）。
+        deadline = time.monotonic() + timeout / 1000
+        last_state = "未知"
+        while time.monotonic() < deadline:
+            if self.on_airwallex_hosted_page():
+                self._wait_for_hosted_payment_ready(timeout)
+                return
+            try:
+                state = self.page.evaluate(
+                    """([selRoot, selMount, selHost, selLoading]) => {
+                        const visible = (el) => Boolean(
+                            el
+                            && el.offsetParent
+                            && el.getBoundingClientRect().height > 0
+                        );
+                        const root = document.querySelector(selRoot);
+                        const mount = document.querySelector(selMount);
+                        const loading = document.querySelector(selLoading);
+                        return {
+                            rootVisible: visible(root),
+                            mountChildren: mount ? mount.children.length : -1,
+                            hasHost: Boolean(document.querySelector(selHost)),
+                            loadingVisible: visible(loading),
+                            frames: document.querySelectorAll(
+                                '.jjb-membership-checkout iframe'
+                            ).length,
+                        };
+                    }""",
+                    [
+                        SEL_CHECKOUT,
+                        SEL_CHECKOUT_MOUNT,
+                        SEL_CHECKOUT_FORM_HOST,
+                        SEL_CHECKOUT_LOADING,
+                    ],
+                )
+            except PlaywrightError:
+                # 正在跳转，下一轮由 on_airwallex_hosted_page 接管。
+                self.page.wait_for_timeout(500)
+                continue
+            last_state = str(state)
+            # 半屏就绪：容器可见，且出现 iframe 或挂载点有内容且 loading 已消失。
+            if state.get("rootVisible"):
+                if state.get("frames", 0) > 0:
+                    return
+                if state.get("mountChildren", 0) > 0 and not state.get(
+                    "loadingVisible"
+                ):
+                    return
+            self.page.wait_for_timeout(500)
+
+        raise AssertionError(
+            f"支付未拉起：半屏弹窗（{SEL_CHECKOUT}）未就绪，也没跳到 Airwallex "
+            f"托管页。当前地址 {self.page.url[:100]}，最后状态：{last_state}"
+        )
+
+    def _wait_for_hosted_payment_ready(self, timeout: int) -> None:
+        """等 Airwallex 全屏托管页的 dropin 表单挂载完成。
+
+        托管页没有站内那套 class，判定依据是 dropin iframe 已加载，
+        并且页面展示了套餐与金额。同样停在表单可见，不填卡不提交。
+        """
         deadline = time.monotonic() + timeout / 1000
         last_state = "未知"
         while time.monotonic() < deadline:
             state = self.page.evaluate(
-                """([selMount, selHost, selLoading]) => {
-                    const mount = document.querySelector(selMount);
-                    const host = document.querySelector(selHost);
-                    const loading = document.querySelector(selLoading);
-                    const loadingVisible = loading
-                        && getComputedStyle(loading).display !== 'none'
-                        && loading.offsetHeight > 0;
-                    const frames = document.querySelectorAll(
-                        '.jjb-membership-checkout iframe'
-                    ).length;
+                """() => {
+                    const frames = Array.from(document.querySelectorAll('iframe'))
+                        .map((f) => f.src || '');
+                    const text = (document.body && document.body.innerText) || '';
                     return {
-                        hasMount: Boolean(mount),
-                        mountChildren: mount ? mount.children.length : -1,
-                        hasHost: Boolean(host),
-                        loadingVisible: Boolean(loadingVisible),
-                        frames,
+                        dropin: frames.some((src) => /elements\\/dropin/i.test(src)),
+                        frames: frames.length,
+                        hasAmount: /\\$\\d[\\d,]*\\.\\d{2}/.test(text),
+                        hasPlan: /membership/i.test(text),
                     };
-                }""",
-                [SEL_CHECKOUT_MOUNT, SEL_CHECKOUT_FORM_HOST, SEL_CHECKOUT_LOADING],
+                }"""
             )
             last_state = str(state)
-            # SDK 就绪的判定：出现 iframe，或挂载点已有子节点且 loading 已消失
-            if state.get("frames", 0) > 0:
-                return
-            if state.get("mountChildren", 0) > 0 and not state.get("loadingVisible"):
+            if state.get("dropin") and state.get("hasAmount"):
                 return
             self.page.wait_for_timeout(500)
 
         raise AssertionError(
-            f"半屏支付表单未在 {timeout}ms 内加载完成，最后状态：{last_state}"
+            f"Airwallex 托管支付页未在 {timeout}ms 内就绪，最后状态：{last_state}"
         )
 
+    def _hosted_summary_text(self) -> str:
+        """Airwallex 托管页左侧订单摘要的整段文案。
+
+        托管页没有站内那套 jjb-* class，只能读可见文本。摘要里含套餐名、
+        账期与金额，足够支撑"拉起了哪一档、金额对不对"的断言。
+        """
+        try:
+            body = self.page.locator("body").first.inner_text()
+        except PlaywrightError:
+            return ""
+        return re.sub(r"\s+", " ", body).strip()
+
+    def _visible_text(self, selector: str) -> str:
+        """只在节点真正可见时返回文案，否则空串。
+
+        站内半屏的 __plan / __price / __billing-label 在未拉起支付时就已经
+        存在于 DOM，且预置了 'Pro Membership'、'$19.90' 这类模板文案
+        （2026-09-20 实测）。用 count() 读会拿到与当前档位无关的假数据——
+        Premium 用例也会读到 Pro 的文案，断言假过或假失败。
+        """
+        node = self.page.locator(selector)
+        if not node.count():
+            return ""
+        try:
+            if not node.first.is_visible():
+                return ""
+            return re.sub(r"\s+", " ", node.first.inner_text()).strip()
+        except PlaywrightError:
+            return ""
+
     def payment_plan_label(self) -> str:
-        """半屏支付弹窗里的套餐标签，如 'Pro Membership · Monthly'。"""
-        plan = self.page.locator(SEL_CHECKOUT_PLAN)
-        if plan.count():
-            return re.sub(r"\s+", " ", plan.first.inner_text()).strip()
+        """支付表单里的套餐标签，如 'Pro Membership · Monthly'。
+
+        托管页的判定必须与语言无关：同一页面在 pytest 的 Chromium 里渲染成
+        中文（"订阅 JuJuBit Pro Membership"），手工打开时是英文
+        （"Subscribe to ..."）。按英文文案匹配会在 CI 里恒空，导致
+        "手工能过、用例必败"（2026-09-20 实测踩到）。
+        所以锚点取语言无关的套餐名本身：<Brand> <Tier> Membership。
+        """
+        inline = self._visible_text(SEL_CHECKOUT_PLAN)
+        if inline:
+            return inline
+        if self.on_airwallex_hosted_page():
+            match = re.search(
+                r"([\w][\w\s]*?(?:Basic|Pro|Premium)\s+Membership)",
+                self._hosted_summary_text(),
+                re.I,
+            )
+            if match:
+                return match.group(1).strip()
         return ""
 
     def payment_billing_label(self) -> str:
-        """支付弹窗里的账期说明，如 'Billed monthly, starting ...'。"""
-        label = self.page.locator(SEL_CHECKOUT_BILLING_LABEL)
-        if label.count():
-            return re.sub(r"\s+", " ", label.first.inner_text()).strip()
+        """支付表单里的账期说明，如 'Billed monthly, in advance'。"""
+        inline = self._visible_text(SEL_CHECKOUT_BILLING_LABEL)
+        if inline:
+            return inline
+        if self.on_airwallex_hosted_page():
+            summary = self._hosted_summary_text()
+            # 中英文都要认：英文 "Billed monthly"，中文 "每月 预付结算"。
+            for pattern in (
+                r"Billed\s+(?:monthly|yearly|annually)[^.]*",
+                r"每(?:月|年)[^。\s]*(?:\s*预付结算)?",
+                r"按(?:月|年)[^。\s]*",
+            ):
+                match = re.search(pattern, summary, re.I)
+                if match:
+                    return match.group(0).strip()
         return ""
 
     def payment_amount_text(self) -> str:
-        """半屏支付弹窗里的实付金额文案。"""
+        """支付表单里的实付金额文案。"""
         for sel in (SEL_CHECKOUT_PRICE, SEL_CHECKOUT_SUBTOTAL):
-            node = self.page.locator(sel)
-            if node.count():
-                text = re.sub(r"\s+", " ", node.first.inner_text()).strip()
-                if re.search(r"[\d.]+", text):
-                    return text
+            text = self._visible_text(sel)
+            if text and re.search(r"[\d.]+", text):
+                return text
+        if self.on_airwallex_hosted_page():
+            summary = self._hosted_summary_text()
+            # 取"今日应付"金额：它是摘要里第一个紧跟 USD 的金额。
+            #
+            # 不能按标签往后捕获：中文版把标签放在金额后面
+            # （"$191.04 USD 今日应付金额"），往后捕获会抓到下一行的小计
+            # 原价 $238.80，把已生效的首年折扣误判成没打折（2026-09-20 实测）。
+            # 英文同构（"$191.04 USD Due today"），所以锚 USD 与语言无关。
+            match = re.search(r"(\$[\d,]+\.\d{2})\s*USD", summary, re.I)
+            if match:
+                return match.group(1)
+            amounts = re.findall(r"\$[\d,]+\.\d{2}", summary)
+            if amounts:
+                return " ".join(amounts)
         return ""
 
     def has_card_input(self) -> bool:
@@ -369,8 +524,17 @@ class MembershipPage:
         return False
 
     def payment_iframe_count(self) -> int:
-        """支付弹窗内的 iframe 数量——SDK 已挂载的直接证据。"""
-        return self.page.locator(f"{SEL_CHECKOUT} iframe").count()
+        """支付表单内的 iframe 数量——SDK 已挂载的直接证据。
+
+        托管页的 dropin 是顶层 iframe，不在 jjb-* 容器内，所以两种形态
+        分别统计。
+        """
+        inline = self.page.locator(f"{SEL_CHECKOUT} iframe").count()
+        if inline:
+            return inline
+        if self.on_airwallex_hosted_page():
+            return self.page.locator("iframe[src*='elements/dropin']").count()
+        return 0
 
     def payment_status_text(self) -> str:
         """支付弹窗里的状态/错误文案。"""
@@ -389,11 +553,24 @@ class MembershipPage:
         return any(h in host for h in AIRWALLEX_HOSTS)
 
     def close_payment(self) -> None:
-        """关闭半屏支付弹窗。不提交任何支付信息。"""
+        """离开支付表单。不填卡、不提交任何支付信息。
+
+        站内半屏点关闭按钮；已跳到 Airwallex 托管页时没有关闭按钮，
+        退回会员页即可——不会产生任何扣款。
+        """
         close = self.page.locator(SEL_CHECKOUT_CLOSE).first
         if close.count() and close.is_visible():
             close.click()
             self.page.wait_for_timeout(1000)
+            return
+        if self.on_airwallex_hosted_page():
+            try:
+                self.page.go_back(wait_until="domcontentloaded", timeout=30_000)
+                self.page.wait_for_timeout(1000)
+            except PlaywrightError:
+                # 托管页偶发不支持回退，留在原页即可，不影响后续 case
+                # （每条 case 用独立 Page）。
+                pass
 
     # ---- 支付失败 ----
 
@@ -415,11 +592,24 @@ class MembershipPage:
     # ---- Membership 管理页 ----
 
     def profile_tab_texts(self) -> list[str]:
-        """个人中心的 Tab 文案列表。"""
-        tabs = self.page.locator(
-            "[class*='tab'], [role='tab'], nav a, nav button"
-        ).filter(has_text=re.compile(r"PROFILE|ORDERS|MEMBERSHIP", re.I))
-        return [tabs.nth(i).inner_text().strip().upper() for i in range(tabs.count())]
+        """会员页顶部视图切换的 Tab 文案列表。
+
+        只读 [role=tab]，不用 [class*='tab'] 这类宽选择器：后者会同时命中
+        父容器和子按钮，拿到 ['MEMBERSHIP\\nPLANS', 'MEMBERSHIP'] 这种
+        父子混杂的结果（2026-09-20 实测）。
+        只取视图切换的那一组，排除档位周期切换（Monthly / Yearly）。
+        """
+        tabs = self.page.get_by_role("tab")
+        texts = []
+        for index in range(tabs.count()):
+            raw = tabs.nth(index).inner_text().strip().upper()
+            # Yearly 页签带折扣副标题，按首行判断即可。
+            first_line = raw.splitlines()[0].strip() if raw else ""
+            if first_line in {"MONTHLY", "YEARLY"} or first_line.startswith("YEARLY"):
+                continue
+            if first_line:
+                texts.append(first_line)
+        return texts
 
     def membership_status_text(self) -> str:
         """管理页顶部的会员状态文案。"""
@@ -468,13 +658,26 @@ class MembershipPage:
             return section.first.inner_text().strip()
         return ""
 
+    def expand_billing_history(self) -> bool:
+        """展开 Billing History 折叠区，返回是否点到了标题。
+
+        该区默认收起，不点开时 __billing-content 恒为空串——旧断言据此
+        比对文案会永远拿到 ''（2026-09-20 实测）。
+        """
+        title = self.page.get_by_text("Billing History", exact=True).first
+        if not title.count():
+            return False
+        title.click()
+        # 展开后前端异步拉取，__billing-status 会短暂显示 Loading。
+        self.page.wait_for_timeout(2_500)
+        return True
+
     def billing_history_text(self) -> str:
-        """Billing History 区域的文案（含空态）。"""
-        section = self.page.locator(
-            "[class*='billing'], [class*='history']"
-        ).filter(has_text=re.compile(r"billing|history", re.I))
-        if section.count():
-            return section.first.inner_text().strip()
+        """Billing History 展开后的文案（含空态）。"""
+        self.expand_billing_history()
+        content = self.page.locator(SEL_OVERVIEW_BILLING_CONTENT).first
+        if content.count():
+            return content.inner_text().strip()
         return ""
 
     # ---- 引流 Banner ----
@@ -554,12 +757,55 @@ class MembershipPage:
         expect(cta).to_be_visible(timeout=TIMEOUT_UI_RENDER)
         cta.click()
 
-    def close_membership_popup(self) -> None:
-        """关闭会员弹窗（线上 class：__close）。"""
-        close = self.page.locator(SEL_OFFER_CLOSE).first
-        if close.count() and close.is_visible():
-            close.click()
-            self.page.wait_for_timeout(600)
+    def _offer_blocks_interaction(self) -> bool:
+        """会员 offer 弹窗是否仍在拦截点击。
+
+        只看 __close 的可见性不够：点一次后弹窗可能重新渲染，
+        __content 层还会继续 intercepts pointer events（2026-09-20 实测）。
+        """
+        return bool(
+            self.page.evaluate(
+                """(sel) => {
+                    const offer = document.querySelector(sel);
+                    if (!offer) return false;
+                    if (!offer.offsetParent) return false;
+                    const style = getComputedStyle(offer);
+                    if (style.display === 'none' || style.visibility === 'hidden') {
+                        return false;
+                    }
+                    return offer.getBoundingClientRect().height > 0;
+                }""",
+                SEL_OFFER,
+            )
+        )
+
+    def close_membership_popup(self, *, observe_timeout: int = 0) -> None:
+        """关闭会员 offer 弹窗，确认它不再拦截点击。
+
+        必须能等：弹窗在页面加载后约 9 秒才渲染（2026-09-20 实测，
+        domcontentloaded 后 900px 高的遮罩才挂上）。不等就立刻检查会看到
+        高度 0，误判成"没有弹窗"直接返回，等到点 Get 时它才出现，
+        于是报 __content intercepts pointer events 的 click timeout。
+
+        observe_timeout > 0 时先观察这么久，等弹窗出现；已经出现则立即关。
+        绝不改样式或删 DOM 绕过，只点真实关闭按钮。
+        """
+        deadline = time.monotonic() + max(0, observe_timeout) / 1000
+        while not self._offer_blocks_interaction() and time.monotonic() < deadline:
+            self.page.wait_for_timeout(200)
+        for _ in range(3):
+            if not self._offer_blocks_interaction():
+                return
+            close = self.page.locator(SEL_OFFER_CLOSE).first
+            if not close.count():
+                return
+            try:
+                close.click(timeout=3_000)
+            except PlaywrightError:
+                # 关闭按钮被上层遮住时稍等后重试，让主题脚本完成渲染。
+                self.page.wait_for_timeout(500)
+                continue
+            self.page.wait_for_timeout(800)
 
     # ---- Generate 超限 toast ----
 

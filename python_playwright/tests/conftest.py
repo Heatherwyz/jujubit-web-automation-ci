@@ -280,12 +280,16 @@ def page(browser, cart_contexts, request, test_platform):
     """为每条 case 创建独立 Page；购物车 case 复用对应平台 Context。"""
     artifact_dir = _artifact_dir(request.config)
     is_cart_session = bool(request.node.get_closest_marker("cart_session"))
+    is_membership_session = bool(
+        request.node.get_closest_marker("membership_session")
+    )
+    needs_storage = is_cart_session or is_membership_session
     storage_state = Path(request.config.getoption("--pw-storage-state")).expanduser()
     if not storage_state.is_absolute():
         storage_state = ROOT / storage_state
-    if is_cart_session:
-        # 购物车用例没有登录态时不要先打开首页再逐条失败，否则会把无效配置
-        # 放大成几十次站点请求，并更容易触发 GitHub Runner 的 429。
+    if needs_storage:
+        # 购物车 / 会员登录态用例没有有效文件时不要先打开首页再逐条失败，
+        # 否则会把无效配置放大成几十次站点请求，并更容易触发 429。
         storage_issue = _storage_state_issue(storage_state)
         if storage_issue:
             pytest.skip(storage_issue)
@@ -298,6 +302,9 @@ def page(browser, cart_contexts, request, test_platform):
         context = cart_contexts.get(test_platform)
     else:
         options = {"viewport": VIEWPORTS[test_platform]}
+        if is_membership_session:
+            # 会员登录态用例独立建 Context，不复用购物车池，避免互相污染 Gallery。
+            options["storage_state"] = str(storage_state)
         if test_platform == "h5":
             options.update(
                 {"device_scale_factor": 3, "is_mobile": True, "has_touch": True}
@@ -432,24 +439,24 @@ def _storage_state_issue(path: Path) -> str:
     """在创建浏览器前检查登录态文件，避免无效登录反复访问站点。"""
     if not path.is_file():
         return (
-            "购物车未完成：登录态文件不存在。请配置 GitHub Secret "
+            "缺少有效登录态：登录态文件不存在。请配置 GitHub Secret "
             "PLAYWRIGHT_STORAGE_STATE_JSON，或使用 --pw-storage-state 指向有效文件。"
         )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        return f"购物车未完成：登录态 JSON 无法读取（{error}）。"
+        return f"缺少有效登录态：登录态 JSON 无法读取（{error}）。"
     if not isinstance(payload, dict):
-        return "购物车未完成：登录态 JSON 顶层必须是对象。"
+        return "缺少有效登录态：登录态 JSON 顶层必须是对象。"
     cookies = payload.get("cookies") or []
     origins = payload.get("origins") or []
     if not cookies and not origins:
-        return "购物车未完成：登录态为空，请重新导出 storage-state.json。"
+        return "缺少有效登录态：登录态为空，请重新导出 storage-state.json。"
     # expiry=0 表示会话 Cookie；只有在所有持久化 Cookie 都过期时才判定失效。
     now = time.time()
     persistent = [cookie for cookie in cookies if float(cookie.get("expires") or 0) > 0]
     if persistent and all(float(cookie.get("expires") or 0) <= now for cookie in persistent):
-        return "购物车未完成：storage-state.json 中的持久化 Cookie 已全部过期，请重新登录导出。"
+        return "缺少有效登录态：storage-state.json 中的持久化 Cookie 已全部过期，请重新登录导出。"
     return ""
 
 

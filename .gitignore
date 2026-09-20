@@ -4,7 +4,7 @@
 __pycache__/
 *.py[cod]
 
-# 每次运行生成的 HTML、截图、录像和临时人工验证状态均为产物，不提交历史文件。
+# 每次运行生成的 HTML、截图、录像、登录态和临时人工验证状态均为产物，不提交历史文件。
 artifacts/
 
 # 本机 IDE 和系统文件。
@@ -20,6 +20,10 @@ lark-*.png
 
 # 飞书扫码登录保存的本地会话，含身份凭据，绝不提交。
 .lark-session/
+
+# 会员/Premium 登录调试用的持久化 Chrome profile，含登录凭据，绝不提交。
+.membership-session/
+.premium-session/
 
 # ZCode 本机会话与工具状态，不属于测试工程。
 .zcode/
