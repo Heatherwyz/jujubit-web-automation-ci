@@ -1,0 +1,227 @@
+name: 每日全量回归（北京 09:00 / 21:00）
+
+# 唯一的定时入口：一个工作流按顺序跑所有套件。
+# 不再跨工作流 dispatch（GITHUB_TOKEN 触发同仓库 dispatch 有速率限制，
+# 连续 HTTP 500）。各套件作为同一 Job 的不同 Step 串行执行。
+#
+# 各业务工作流（daily-ui-tests / membership-ui-tests / cart-ui-tests）
+# 仍保留 workflow_dispatch 入口，供手动单独触发。
+#
+# 北京时间 09:00 = UTC 01:00；21:00 = UTC 13:00。
+on:
+  schedule:
+    - cron: "0 1 * * *"
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: jujubit-site-ui-tests
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  regression:
+    name: 全量回归
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: 拉取测试代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-playwright.txt
+
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-playwright.txt
+          python -m playwright install --with-deps chromium
+
+      # ---- 1. 离线检查（< 30 秒）----
+      - name: 离线单测
+        run: python -m pytest -q
+
+      # ---- 2. 首页 UI 回归 ----
+      - name: 记录开始时间
+        id: test_meta
+        shell: bash
+        run: echo "started_at=$(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$GITHUB_OUTPUT"
+
+      - name: 执行首页 UI 回归
+        id: home_suite
+        shell: bash
+        run: |
+          set +e
+          python run_all.py
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: 定位首页报告
+        id: home_report
+        if: always()
+        shell: bash
+        run: |
+          run_dir=$(find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort | tail -n 1 || true)
+          if [[ -z "$run_dir" ]]; then exit 0; fi
+          run_dir=${run_dir%/}
+          echo "run_dir=${run_dir}" >> "$GITHUB_OUTPUT"
+          echo "run_id=$(basename "$run_dir")" >> "$GITHUB_OUTPUT"
+          echo "results_xml=${run_dir}/results.xml" >> "$GITHUB_OUTPUT"
+
+      - name: 首页飞书通知
+        if: always() && steps.home_report.outputs.results_xml != ''
+        continue-on-error: true
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+          LARK_WEBHOOK_SECRET: ${{ secrets.LARK_WEBHOOK_SECRET }}
+          RESULTS_XML: ${{ steps.home_report.outputs.results_xml }}
+          REPORT_RUN_ID: ${{ steps.home_report.outputs.run_id }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TEST_EXIT_CODE: ${{ steps.home_suite.outputs.exit_code }}
+          TEST_BRANCH: ${{ github.ref_name }}
+          TEST_ACTOR: ${{ github.actor }}
+          TEST_COMMIT: ${{ github.sha }}
+          TEST_STARTED_AT: ${{ steps.test_meta.outputs.started_at }}
+        run: python scripts/send_lark_test_report.py
+
+      - name: 首页 Job Summary
+        if: always() && steps.home_report.outputs.results_xml != ''
+        continue-on-error: true
+        env:
+          RESULTS_XML: ${{ steps.home_report.outputs.results_xml }}
+          SUITE_LABEL: 首页 UI 回归
+          REPORT_RUN_ID: ${{ steps.home_report.outputs.run_id }}
+        run: python scripts/write_job_summary.py >> "$GITHUB_STEP_SUMMARY"
+
+      # ---- 3. 会员 UI 回归 ----
+      - name: 执行会员 UI 回归
+        id: mem_suite
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          python run_all.py --membership-only
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: 定位会员报告
+        id: mem_report
+        if: always()
+        shell: bash
+        run: |
+          # 会员的 run_dir 是最新的那个（首页的已被上面取过）
+          run_dir=$(find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort | tail -n 1 || true)
+          if [[ -z "$run_dir" ]]; then exit 0; fi
+          run_dir=${run_dir%/}
+          echo "run_dir=${run_dir}" >> "$GITHUB_OUTPUT"
+          echo "run_id=$(basename "$run_dir")" >> "$GITHUB_OUTPUT"
+          echo "results_xml=${run_dir}/results.xml" >> "$GITHUB_OUTPUT"
+
+      - name: 会员飞书通知
+        if: always() && steps.mem_report.outputs.results_xml != ''
+        continue-on-error: true
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+          LARK_WEBHOOK_SECRET: ${{ secrets.LARK_WEBHOOK_SECRET }}
+          RESULTS_XML: ${{ steps.mem_report.outputs.results_xml }}
+          REPORT_RUN_ID: ${{ steps.mem_report.outputs.run_id }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TEST_EXIT_CODE: ${{ steps.mem_suite.outputs.exit_code }}
+          TEST_BRANCH: ${{ github.ref_name }}
+          TEST_ACTOR: ${{ github.actor }}
+          TEST_COMMIT: ${{ github.sha }}
+          TEST_STARTED_AT: ${{ steps.test_meta.outputs.started_at }}
+        run: python scripts/send_lark_test_report.py
+
+      - name: 会员 Job Summary
+        if: always() && steps.mem_report.outputs.results_xml != ''
+        continue-on-error: true
+        env:
+          RESULTS_XML: ${{ steps.mem_report.outputs.results_xml }}
+          SUITE_LABEL: 会员 UI 回归
+          REPORT_RUN_ID: ${{ steps.mem_report.outputs.run_id }}
+        run: python scripts/write_job_summary.py >> "$GITHUB_STEP_SUMMARY"
+
+      # ---- 4. 购物车 UI 回归 ----
+      - name: 执行购物车 UI 回归
+        id: cart_suite
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          python run_all.py --cart-daily
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: 定位购物车报告
+        id: cart_report
+        if: always()
+        shell: bash
+        run: |
+          run_dir=$(find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort | tail -n 1 || true)
+          if [[ -z "$run_dir" ]]; then exit 0; fi
+          run_dir=${run_dir%/}
+          echo "run_dir=${run_dir}" >> "$GITHUB_OUTPUT"
+          echo "run_id=$(basename "$run_dir")" >> "$GITHUB_OUTPUT"
+          echo "results_xml=${run_dir}/results.xml" >> "$GITHUB_OUTPUT"
+
+      - name: 购物车飞书通知
+        if: always() && steps.cart_report.outputs.results_xml != ''
+        continue-on-error: true
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+          LARK_WEBHOOK_SECRET: ${{ secrets.LARK_WEBHOOK_SECRET }}
+          RESULTS_XML: ${{ steps.cart_report.outputs.results_xml }}
+          REPORT_RUN_ID: ${{ steps.cart_report.outputs.run_id }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TEST_EXIT_CODE: ${{ steps.cart_suite.outputs.exit_code }}
+          TEST_BRANCH: ${{ github.ref_name }}
+          TEST_ACTOR: ${{ github.actor }}
+          TEST_COMMIT: ${{ github.sha }}
+          TEST_STARTED_AT: ${{ steps.test_meta.outputs.started_at }}
+        run: python scripts/send_lark_test_report.py
+
+      - name: 购物车 Job Summary
+        if: always() && steps.cart_report.outputs.results_xml != ''
+        continue-on-error: true
+        env:
+          RESULTS_XML: ${{ steps.cart_report.outputs.results_xml }}
+          SUITE_LABEL: 购物车 UI 回归
+          REPORT_RUN_ID: ${{ steps.cart_report.outputs.run_id }}
+        run: python scripts/write_job_summary.py >> "$GITHUB_STEP_SUMMARY"
+
+      # ---- 上传全部报告 ----
+      - name: 上传全部报告
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: jujubit-regression-${{ steps.home_report.outputs.run_id || 'unknown' }}
+          path: artifacts/runs/
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ---- 最终退出码 ----
+      - name: 综合退出码
+        if: always()
+        shell: bash
+        run: |
+          home="${{ steps.home_suite.outputs.exit_code }}"
+          mem="${{ steps.mem_suite.outputs.exit_code }}"
+          cart="${{ steps.cart_suite.outputs.exit_code }}"
+          echo "首页=$home  会员=$mem  购物车=$cart"
+          # 任一套件失败则整体失败
+          for code in "$home" "$mem" "$cart"; do
+            if [[ -n "$code" && "$code" != "0" ]]; then exit 1; fi
+          done
