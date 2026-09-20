@@ -40,32 +40,47 @@ jobs:
           dispatch() {
             local workflow="$1"
             local inputs="${2:-}"
-            echo "触发 $workflow ..."
-            if [[ -n "$inputs" ]]; then
-              gh workflow run "$workflow" --repo "$REPO" --json "$inputs"
-            else
-              gh workflow run "$workflow" --repo "$REPO"
-            fi
-            echo "  已触发"
+            local max_retries=3
+            for attempt in $(seq 1 $max_retries); do
+              echo "触发 $workflow（第 ${attempt} 次）..."
+              if [[ -n "$inputs" ]]; then
+                if gh workflow run "$workflow" --repo "$REPO" --json "$inputs" 2>&1; then
+                  echo "  已触发"; return 0
+                fi
+              else
+                if gh workflow run "$workflow" --repo "$REPO" 2>&1; then
+                  echo "  已触发"; return 0
+                fi
+              fi
+              echo "  失败，等待 10 秒重试..."
+              sleep 10
+            done
+            echo "  $workflow 触发失败（重试 $max_retries 次）" >&2
+            return 1
           }
 
-          # 1. 离线检查（最快，< 30 秒，先跑完确认代码没坏）
+          failed=0
+
+          # 1. 离线检查
           if [[ "${{ inputs.skip_offline }}" != "true" ]]; then
-            dispatch "offline-checks.yml"
+            dispatch "offline-checks.yml" || ((failed++))
             sleep 5
           fi
 
-          # 2. 首页 UI 回归（不需要登录态，约 15 分钟）
-          dispatch "daily-ui-tests.yml"
+          # 2. 首页 UI 回归
+          dispatch "daily-ui-tests.yml" || ((failed++))
           sleep 5
 
-          # 3. 会员 UI 回归（约 15 分钟，与首页串行）
-          dispatch "membership-ui-tests.yml"
+          # 3. 会员 UI 回归
+          dispatch "membership-ui-tests.yml" || ((failed++))
           sleep 5
 
-          # 4. 购物车 UI 回归（需要登录态，约 30 分钟，排最后）
-          dispatch "cart-ui-tests.yml" '{"suite":"daily"}'
+          # 4. 购物车 UI 回归
+          dispatch "cart-ui-tests.yml" '{"suite":"daily"}' || ((failed++))
 
           echo ""
-          echo "全部触发完成。四个工作流共用并发组 jujubit-site-ui-tests，"
-          echo "会自动排队串行执行，不会同时访问站点。"
+          if (( failed > 0 )); then
+            echo "有 $failed 个工作流触发失败。" >&2
+            exit 1
+          fi
+          echo "全部触发完成。四个工作流共用并发组，自动排队串行执行。"
