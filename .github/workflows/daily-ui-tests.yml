@@ -2,13 +2,8 @@ name: JuJuBit 首页 UI Tests
 
 on:
   workflow_dispatch:
-  schedule:
-    # 备份触发：本仓库 GitHub cron 长期迟到 4–5 小时。准时入口是本机
-    # LaunchAgent 在北京时间 09:00 / 21:00 调用 workflow_dispatch。
-    # 若本机已触发，下面的 gate job 会跳过这次迟到的 schedule。
-    # 01:00 UTC = 北京时间 09:00；13:00 UTC = 21:00。
-    - cron: "0 1 * * *"
-    - cron: "0 13 * * *"
+  # schedule 已停用：GitHub cron 对本仓库长期迟到 4–5 小时。
+  # 准时触发由外部 workflow_dispatch 负责（北京时间 09:00 / 21:00）。
 
 # 首页和购物车工作流共用同一个并发组，任何时刻只允许一个 Runner 访问站点。
 # 不取消正在执行的完整购物车回归，后来的定时任务会排队，避免重跑又产生一轮登录请求。

@@ -2,11 +2,8 @@ name: JuJuBit 会员 UI Tests
 
 on:
   workflow_dispatch:
-  schedule:
-    # 与首页、购物车串行执行（共用并发组）。
-    # 01:00 UTC = 北京时间 09:00；13:00 UTC = 21:00。
-    - cron: "0 1 * * *"
-    - cron: "0 13 * * *"
+  # schedule 已停用：GitHub cron 对本仓库长期迟到 4–5 小时。
+  # 准时触发由外部 workflow_dispatch 负责（北京时间 09:00 / 21:00）。
 
 # 与首页和购物车共用并发组，任何时刻只允许一个 Runner 访问站点。
 concurrency:

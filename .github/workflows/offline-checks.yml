@@ -13,10 +13,7 @@ on:
     branches:
       - main
   workflow_dispatch:
-  schedule:
-    # 备份触发：准时入口是本机 LaunchAgent 的 workflow_dispatch。
-    # 01:00 UTC = 北京时间 09:00；13:00 UTC = 21:00。
-    - cron: "0 1 * * *"
+  # schedule 已停用：离线检查在每次 push/PR 时已自动跑，不需要定时。
     - cron: "0 13 * * *"
 
 # 与访问站点的工作流不共用并发组：本工作流不产生任何站点请求，

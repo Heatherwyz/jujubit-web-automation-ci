@@ -12,13 +12,8 @@ on:
           - smoke
           - daily
           - full
-  schedule:
-    # 备份触发：准时入口是飞书妙搭或本机 LaunchAgent 的 workflow_dispatch。
-    # GitHub cron 对本仓库长期迟到 4–5 小时；gate job 会在已准时触发时跳过。
-    # 01:00 UTC = 北京时间 09:00；13:00 UTC = 21:00。
-    # 所有定时班次都执行每日分层（21 条）；完整 30 条只走手动 workflow_dispatch。
-    - cron: "0 1 * * *"
-    - cron: "0 13 * * *"
+  # schedule 已停用：GitHub cron 对本仓库长期迟到 4–5 小时。
+  # 准时触发由外部 workflow_dispatch 负责（北京时间 09:00 / 21:00）。
 
 # 与每日首页回归串行执行，避免两个 Runner 从不同出口同时访问同一登录账号。
 concurrency:
