@@ -258,7 +258,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             target = output_dir / name
             target.write_text(
                 f"# {node['title']}\n\n"
-                f"> 来源：https://<LARK_TENANT_HOST>/wiki/{wiki_token}\n\n"
+                f"> 来源：wiki token {wiki_token}\n\n"
                 f"{content}\n",
                 encoding="utf-8",
             )

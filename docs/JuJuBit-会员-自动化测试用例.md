@@ -1,8 +1,9 @@
 # JuJuBit 会员自动化测试用例
 
-> 需求来源：飞书 wiki 14 篇文档（见 `docs/requirements/`）
-> 冲突确认：`docs/requirements/07-冲突确认结果.md`
-> 已有手工用例：93 条（`docs/requirements/06-已有会员测试用例.md`）
+> 需求来源：内部飞书 wiki 14 篇文档。原文属公司内部资产，只保留在本地
+> `docs/requirements/`（已在 `.gitignore` 中，不随仓库分发）。
+> 确认后的期望值已沉淀进 `python_playwright/membership_contract.py`，
+> 测试不依赖这些原文。
 
 ## 设计原则
 
@@ -184,9 +185,8 @@ https://jujubit.ai/pages/vip-program?preview_theme_id=194830631283&entry_page=he
 
 ### 后台会员赠送（造测试数据）
 
-```
-<内部运营后台，地址不入库>
-```
+内部运营后台的会员赠送页面，地址不写入仓库。需要造多档位测试数据时
+向团队索取，或从本地 `docs/requirements/` 的需求原文中查阅。
 
 ---
 

@@ -25,5 +25,11 @@ lark-*.png
 .membership-session/
 .premium-session/
 
+# 从飞书 wiki 抓取的内部需求文档（会员体系设计、后端方案、内部手工用例）。
+# 属于公司内部资产，只保留在本地工作副本，不进 git、不随仓库对外分发。
+# 抓取方式见 scripts/fetch_lark_docs.py；确认后的期望值已沉淀进
+# python_playwright/membership_contract.py，测试不依赖这些原文。
+docs/requirements/
+
 # ZCode 本机会话与工具状态，不属于测试工程。
 .zcode/
