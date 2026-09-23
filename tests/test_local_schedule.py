@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.dispatch_scheduled_workflows import (
-    cart_suite_for,
     main as dispatch_main,
     parse_now,
+    resolve_repo,
     resolve_shift,
 )
 from scripts.install_local_schedule import LABEL, plist_text
@@ -54,48 +54,83 @@ class ShiftAndSuiteTests(unittest.TestCase):
         self.assertEqual(resolve_shift(morning, "auto"), "morning")
         self.assertEqual(resolve_shift(evening, "auto"), "evening")
 
-    def test_every_shift_uses_daily_cart_suite(self) -> None:
-        sunday_morning = parse_now("2026-09-20T09:00")
-        sunday_evening = parse_now("2026-09-20T21:00")
-        friday_morning = parse_now("2026-09-18T09:00")
-        self.assertEqual(sunday_morning.weekday(), 6)
-        self.assertEqual(cart_suite_for(sunday_morning, "morning"), "daily")
-        self.assertEqual(cart_suite_for(sunday_evening, "evening"), "daily")
-        self.assertEqual(cart_suite_for(friday_morning, "morning"), "daily")
+    def test_resolve_repo_prefers_argument_then_env(self) -> None:
+        """命令行 > 环境变量 > 默认值，且都要过格式校验。"""
+        self.assertEqual(resolve_repo("owner/name"), "owner/name")
+        with patch.dict(
+            "os.environ", {"JUJUBIT_DISPATCH_REPO": "envowner/envname"}
+        ):
+            self.assertEqual(resolve_repo(""), "envowner/envname")
+            self.assertEqual(resolve_repo("cli/wins"), "cli/wins")
+        self.assertEqual(
+            resolve_repo(""), "Heatherwyz/jujubit-web-automation-ci"
+        )
+
+    def test_resolve_repo_rejects_injection_shapes(self) -> None:
+        """空串是"未指定"，回落默认值；其余畸形输入必须拒绝。
+
+        以 - 开头的值尤其危险：gh 会把它当成命令行选项而不是仓库名。
+        """
+        for bad in (
+            "evil; rm -rf /",
+            "no-slash",
+            "a/b/c",
+            "--flag/x",
+            "-x/y",
+            "a/-y",
+            "a b/c",
+            "a/b c",
+        ):
+            with self.assertRaises(ValueError, msg=f"未拒绝：{bad!r}"):
+                resolve_repo(bad)
 
 
 class DispatchDryRunTests(unittest.TestCase):
-    def test_weekday_morning_dry_run_prints_daily_cart(self) -> None:
-        stdout = StringIO()
-        with patch("sys.stdout", stdout):
-            code = dispatch_main(
-                ["--dry-run", "--now", "2026-09-18T09:00"]
-            )
-        self.assertEqual(code, 0)
-        text = stdout.getvalue()
-        self.assertIn("购物车套件=daily", text)
-        self.assertIn("gh workflow run offline-checks.yml --ref main", text)
-        self.assertIn("gh workflow run daily-ui-tests.yml --ref main", text)
-        self.assertIn(
-            "gh workflow run cart-ui-tests.yml --ref main -f suite=daily",
-            text,
-        )
-        self.assertNotIn("suite=full", text)
+    """只触发 daily-regression 一个工作流。
 
-    def test_sunday_morning_dry_run_also_prints_daily_cart(self) -> None:
+    不再分别 dispatch 三个工作流：同仓库连续 dispatch 会撞 GITHUB_TOKEN
+    速率限制（历史上连续 HTTP 500）。
+    """
+
+    def test_weekday_morning_dispatches_daily_regression(self) -> None:
         stdout = StringIO()
         with patch("sys.stdout", stdout):
-            code = dispatch_main(
-                ["--dry-run", "--now", "2026-09-20T09:00"]
-            )
+            code = dispatch_main(["--dry-run", "--now", "2026-09-18T09:00"])
         self.assertEqual(code, 0)
         text = stdout.getvalue()
-        self.assertIn("购物车套件=daily", text)
-        self.assertIn(
-            "gh workflow run cart-ui-tests.yml --ref main -f suite=daily",
-            text,
-        )
-        self.assertNotIn("suite=full", text)
+        self.assertIn("班次=morning", text)
+        self.assertIn("gh workflow run daily-regression.yml", text)
+        self.assertIn("--ref main", text)
+        # 旧的三工作流入口不应再出现。
+        self.assertNotIn("offline-checks.yml", text)
+        self.assertNotIn("daily-ui-tests.yml", text)
+        self.assertNotIn("cart-ui-tests.yml", text)
+
+    def test_sunday_evening_dispatches_same_workflow(self) -> None:
+        stdout = StringIO()
+        with patch("sys.stdout", stdout):
+            code = dispatch_main(["--dry-run", "--now", "2026-09-20T21:00"])
+        self.assertEqual(code, 0)
+        text = stdout.getvalue()
+        self.assertIn("班次=evening", text)
+        self.assertIn("gh workflow run daily-regression.yml", text)
+
+    def test_target_repo_is_explicit(self) -> None:
+        """必须显式带 --repo：迁库后靠工作目录推断会打到旧仓库。"""
+        stdout = StringIO()
+        with patch("sys.stdout", stdout):
+            code = dispatch_main(["--dry-run", "--now", "2026-09-18T09:00"])
+        self.assertEqual(code, 0)
+        text = stdout.getvalue()
+        self.assertIn("--repo Heatherwyz/jujubit-web-automation-ci", text)
+
+    def test_illegal_repo_is_rejected(self) -> None:
+        """仓库名只允许 owner/repo 字符集，挡住注入形状的输入。"""
+        stderr = StringIO()
+        with patch("sys.stderr", stderr):
+            code = dispatch_main(["--dry-run", "--repo", "evil; rm -rf /"])
+        self.assertEqual(code, 1)
+        self.assertIn("仓库名格式非法", stderr.getvalue())
 
 
 class LaunchAgentPlistTests(unittest.TestCase):

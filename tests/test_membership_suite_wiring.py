@@ -537,5 +537,75 @@ class PaymentBoundaryTests(unittest.TestCase):
             self.assertNotIn("4035", text, f"{path.name} 不应硬编码测试卡号")
 
 
+class LoginStateVerdictTests(unittest.TestCase):
+    """登录态失效必须报"未完成"，不能报成"支付未拉起"的业务失败。
+
+    历史问题（2026-09-22 本地全量）：登录态过期后整页跳到
+    shopify.com/authentication/.../oauth/authorize，等待循环耗完 SDK 超时才抛
+    AssertionError，6 条支付用例被判业务失败；同一根因的另外 15 条会员用例却
+    正确报了"缺少有效登录态"。同一个环境问题只能有一种口径，否则看报告的人会
+    去查支付功能，而真正要做的是重新导出登录态。
+    """
+
+    PAGE_OBJECT = ROOT / "python_playwright" / "pages" / "membership_page.py"
+
+    def test_wait_loop_aborts_on_login_redirect(self) -> None:
+        """等待支付表单时必须先识别登录页，不能等到超时。
+
+        必须先剥注释与文档字符串：这段实现的注释里就写着"误报成『支付未拉起』"
+        这样的反面说明，直接扫原文会把说明当成代码顺序，守护测试自己绊自己。
+        """
+        source = strip_comments_and_docstrings(
+            self.PAGE_OBJECT.read_text(encoding="utf-8")
+        )
+        start = source.index("def wait_for_payment_form")
+        body = source[start : source.index("def _wait_for_hosted_payment_ready")]
+
+        self.assertIn(
+            "on_customer_login_page",
+            body,
+            "wait_for_payment_form 必须在跳登录页时立刻中止，否则超时会误报支付失败",
+        )
+        self.assertLess(
+            body.index("on_customer_login_page"),
+            body.index("支付未拉起"),
+            "登录页判断必须早于『支付未拉起』的 AssertionError",
+        )
+
+    def test_login_redirect_raises_dedicated_error(self) -> None:
+        """登录态失效用专用异常，不能复用 AssertionError。"""
+        source = self.PAGE_OBJECT.read_text(encoding="utf-8")
+
+        self.assertIn("class MembershipLoginRequiredError", source)
+        start = source.index("def wait_for_payment_form")
+        body = source[start : source.index("def _wait_for_hosted_payment_ready")]
+        self.assertIn("raise MembershipLoginRequiredError", body)
+
+    def test_payment_tests_skip_instead_of_fail(self) -> None:
+        """三条支付用例都要走会 skip 的包装，不能直接调等待方法。"""
+        source = MEMBERSHIP_TEST_FILE.read_text(encoding="utf-8")
+        cleaned = strip_comments_and_docstrings(source)
+
+        self.assertIn("except MembershipLoginRequiredError", cleaned)
+        self.assertIn("pytest.skip", cleaned)
+        for name in (
+            "def test_mem11_pro_monthly_payment_form",
+            "def test_mem12_pro_yearly_payment_form",
+            "def test_mem13_premium_monthly_payment_form",
+        ):
+            start = cleaned.index(name)
+            body = cleaned[start : start + 1400]
+            self.assertIn(
+                "_wait_for_payment_or_skip",
+                body,
+                f"{name} 应走 _wait_for_payment_or_skip，登录态失效才会记为未完成",
+            )
+            self.assertNotIn(
+                "mp.wait_for_payment_form()",
+                body,
+                f"{name} 不应直接调 wait_for_payment_form，登录态失效会被误判成业务失败",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,7 @@ from python_playwright.pages.membership_page import (
     PAYWALL_PATH,
     PROFILE_TAB_ORDER,
     SEL_OVERVIEW_SIGNED_OUT,
+    MembershipLoginRequiredError,
     MembershipPage,
 )
 
@@ -190,6 +191,21 @@ def _require_logged_in_paywall(mp, page) -> None:
         )
 
 
+def _wait_for_payment_or_skip(mp, page) -> None:
+    """等待支付表单；登录态失效时记为未完成，而不是"支付未拉起"的业务失败。
+
+    历史问题（2026-09-22 全量回归实测）：登录态过期后整页跳到
+    ``shopify.com/authentication/.../oauth/authorize``，等待循环耗完 SDK 超时
+    才抛 AssertionError，于是 6 条支付用例被报成业务失败；而同一根因的其他
+    15 条会员用例正确地报了"缺少有效登录态"。同一个环境问题必须只有一种口径。
+    """
+    try:
+        mp.wait_for_payment_form()
+    except MembershipLoginRequiredError as error:
+        pytest.skip(f"{error} 请重新导出 PLAYWRIGHT_STORAGE_STATE_JSON 后重跑。")
+    _require_logged_in_paywall(mp, page)
+
+
 @pytest.mark.membership_session
 def test_mem11_pro_monthly_payment_form(home, page, test_platform):
     """MEM-11: Pro Monthly 拉起半屏支付。走到表单可见即止，不填卡不付款。"""
@@ -200,8 +216,7 @@ def test_mem11_pro_monthly_payment_form(home, page, test_platform):
     # 不加固定等待：点 Get 后线上约 8 秒才跳 Airwallex，6 秒时检查 URL
     # 只会看到还停在会员页，既拦不住缺登录态也会误导排查。
     # wait_for_payment_form 自己会轮询两种形态。
-    mp.wait_for_payment_form()
-    _require_logged_in_paywall(mp, page)
+    _wait_for_payment_or_skip(mp, page)
     label = mp.payment_plan_label()
     assert "Pro" in label, f"支付表单应显示 Pro 套餐，实际 {label!r}"
     billing = mp.payment_billing_label()
@@ -228,8 +243,7 @@ def test_mem12_pro_yearly_payment_form(home, page, test_platform):
     # 不加固定等待：点 Get 后线上约 8 秒才跳 Airwallex，6 秒时检查 URL
     # 只会看到还停在会员页，既拦不住缺登录态也会误导排查。
     # wait_for_payment_form 自己会轮询两种形态。
-    mp.wait_for_payment_form()
-    _require_logged_in_paywall(mp, page)
+    _wait_for_payment_or_skip(mp, page)
     amount = mp.payment_amount_text()
     expected = FIRST_YEAR_PRICES["Pro"].lstrip("$").replace(",", "")
     assert expected in amount.replace(",", ""), (
@@ -253,8 +267,7 @@ def test_mem13_premium_monthly_payment_form(home, page, test_platform):
     # 不加固定等待：点 Get 后线上约 8 秒才跳 Airwallex，6 秒时检查 URL
     # 只会看到还停在会员页，既拦不住缺登录态也会误导排查。
     # wait_for_payment_form 自己会轮询两种形态。
-    mp.wait_for_payment_form()
-    _require_logged_in_paywall(mp, page)
+    _wait_for_payment_or_skip(mp, page)
     label = mp.payment_plan_label()
     assert "Premium" in label, f"支付表单应显示 Premium 套餐，实际 {label!r}"
     assert mp.payment_iframe_count() > 0 or mp.has_card_input(), (

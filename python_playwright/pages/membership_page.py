@@ -23,6 +23,13 @@ from playwright.sync_api import (
 from python_playwright.pages.home_page import HomePage, SiteRateLimitError
 
 
+class MembershipLoginRequiredError(RuntimeError):
+    """登录态失效导致支付无法拉起，当前用例未完成业务校验。
+
+    与"支付未拉起"必须分开：后者是业务失败，前者只是本轮环境缺登录态。
+    """
+
+
 # --- 确认后的期望值 ---
 
 TIERS = ("Basic", "Pro", "Premium")
@@ -306,6 +313,19 @@ class MembershipPage:
         layer = self.page.locator(SEL_CHECKOUT)
         return bool(layer.count()) and layer.first.is_visible()
 
+    def on_customer_login_page(self) -> bool:
+        """当前是否已跳到 Shopify 托管的登录/授权页。
+
+        登录态失效时点 Get 会整页跳到
+        ``shopify.com/authentication/<id>/oauth/authorize``，半屏支付永不出现。
+        这属于"本轮未完成"，不是支付功能坏了，所以要和支付未拉起区分开。
+        """
+        url = (self.page.url or "").lower()
+        return any(
+            marker in url
+            for marker in ("/authentication/", "/account/login", "/login")
+        )
+
     def on_airwallex_hosted_page(self) -> bool:
         """当前是否已跳到 Airwallex 全屏托管支付页。
 
@@ -336,6 +356,14 @@ class MembershipPage:
             if self.on_airwallex_hosted_page():
                 self._wait_for_hosted_payment_ready(timeout)
                 return
+            # 跳到 Shopify 登录页说明登录态失效，半屏支付不可能再出现。
+            # 必须在这里立刻中止：否则会耗完 SDK 超时，再把"未完成"误报成
+            # "支付未拉起"的业务失败（2026-09-22 全量回归实测 6 条）。
+            if self.on_customer_login_page():
+                raise MembershipLoginRequiredError(
+                    "缺少有效登录态：点 Get 已跳转 Shopify 登录页，半屏支付未拉起。"
+                    f"当前地址 {self.page.url[:120]}"
+                )
             try:
                 state = self.page.evaluate(
                     """([selRoot, selMount, selHost, selLoading]) => {
