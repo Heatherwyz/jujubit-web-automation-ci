@@ -150,21 +150,29 @@ Object，最后仍由 pytest 和 `run_all.py` 执行回归、生成报告。
 
 ## GitHub Actions 定时运行
 
-三个工作流的**准时入口建议用飞书妙搭**：每天北京时间 09:00 和 21:00 各发三次
-`workflow_dispatch`。GitHub 自己的 `schedule` 对本仓库长期迟到 4–5 小时，只作为
-备份；迟到到达时若 11 小时内已有同工作流的手动触发，测试 job 会跳过，避免购物车
-同一班次跑两遍。
+**准时入口是 Supabase pg_cron**：每天北京时间 09:00 和 21:00 各发一次
+`workflow_dispatch`，触发 `每日全量回归`（一个工作流按 Step 串行跑离线 → 首页
+→ 会员 → 购物车）。配置步骤见 [Supabase 定时触发](docs/supabase-scheduler.md)。
 
-飞书群里的自定义机器人 Webhook **只能收结果卡片，不能反向触发 GitHub**。触发要
-用妙搭（或本机 `gh`）调 GitHub API；结果仍由现有工作流推到飞书。
+**只保留这一条触发路径。** `daily-regression.yml` 里的 GitHub `schedule` 已移除
+（对本仓库长期迟到 4–5 小时），本机 LaunchAgent 也已卸载。多条路径并存会让同一天
+重复跑全量——每轮约 40 分钟，且购物车层会在测试账号下真实生成模型并加购。
+
+飞书群里的自定义机器人 Webhook **只能收结果卡片，不能反向触发 GitHub**。触发由
+Supabase 调 GitHub API；结果仍由工作流自己推到飞书。
 
 两个 UI 工作流还会在每次运行后上传 HTML、截图、失败录像和 `results.xml`：
 
-| 工作流 | 自动执行 | 手动入口 | 用途 |
+| 工作流 | 定时执行 | 手动入口 | 用途 |
 | --- | --- | --- | --- |
-| `JuJuBit 首页 UI Tests` | 每天北京时间 09:00 与 21:00 | **Actions → JuJuBit 首页 UI Tests → Run workflow** | 只执行首页 PC/H5 用例，不读取购物车登录态。 |
-| `JuJuBit 购物车 UI Tests` | 每天北京时间 09:00 与 21:00，固定 `daily` | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | `daily` 为 PC 全量 15 条 + H5 关键 6 条，共 21 条；`full` 为 PC/H5 各 15 条，共 30 条，只在手动选择时执行。 |
-| `离线检查` | 每天北京时间 09:00 与 21:00，以及每个 PR 和推送到 `main` | **Actions → 离线检查 → Run workflow** | 离线单测、套件收集与 fixture 静态检查，不访问站点。 |
+| `每日全量回归` | **是**，Supabase pg_cron 每天北京时间 09:00 与 21:00 | **Actions → 每日全量回归 → Run workflow** | 一个 Job 按 Step 串行跑离线 → 首页 → 会员 → 购物车（`--cart-daily`），每层单独发飞书卡片。约 40 分钟。 |
+| `JuJuBit 首页 UI Tests` | 否 | **Actions → JuJuBit 首页 UI Tests → Run workflow** | 只执行首页 PC/H5 用例，不读取购物车登录态。 |
+| `JuJuBit 会员 UI Tests` | 否 | **Actions → JuJuBit 会员 UI Tests → Run workflow** | 会员付费墙、管理页、支付拉起（只到表单可见，不付款）。 |
+| `JuJuBit 购物车 UI Tests` | 否 | **Actions → JuJuBit 购物车 UI Tests → Run workflow** | `daily` 为 PC 全量 15 条 + H5 关键 6 条，共 21 条；`full` 为 PC/H5 各 15 条，共 30 条。 |
+| `离线检查` | 否（但每个 PR 和推送到 `main` 都跑） | **Actions → 离线检查 → Run workflow** | 离线单测、套件收集与 fixture 静态检查，不访问站点。 |
+
+三个业务工作流保留 `workflow_dispatch` 是为了单独补跑某一层；定时班次只走
+`每日全量回归` 一个入口，避免同一时段重复登录同一个测试账号。
 
 两个访问站点的工作流共享同一个并发队列 `jujubit-site-ui-tests`，任何时刻只允许一个 Runner
 访问站点。09:00 和 21:00 两个班次里首页与购物车会同时触发，后到的那个自动排队，等前一个跑完再开始，
@@ -174,60 +182,40 @@ Object，最后仍由 pytest 和 `run_all.py` 执行回归、生成报告。
 
 两个 UI 工作流会分别发送“首页”和“购物车”的飞书结果卡片与独立 Artifact，这是为了让失败录像和模块统计更清晰。
 
-### 用飞书妙搭做 09:00 / 21:00 准时触发
+### Supabase pg_cron 准时触发
 
-建两条定时任务，时区 `Asia/Shanghai`：每天 09:00、每天 21:00。每条任务里按顺序发 3 个
-HTTP POST（离线 → 首页 → 购物车）。Token 用只开本仓库 Actions 写权限的 GitHub PAT，
-放在妙搭连接器密钥里，不要写进群机器人 Webhook。
+完整步骤（启用扩展、存 PAT 到 Vault、建任务、验证、排查）见
+[docs/supabase-scheduler.md](docs/supabase-scheduler.md)。
 
-共同请求头：
+要点：
 
-```text
-Accept: application/vnd.github+json
-Authorization: Bearer <PAT>
-X-GitHub-Api-Version: 2022-11-28
-```
+- 只需要一个 **GitHub fine-grained PAT**，权限仅 `Actions: Read and write`，
+  仓库只勾 `jujubit-web-automation-ci`。PAT 存 Supabase Vault，不写进 SQL。
+- `cron.schedule` 的表达式是 **UTC**：北京 09:00 = `0 1 * * *`，
+  21:00 = `0 13 * * *`。
+- 成功的标志是 GitHub 返回 **204**；查 `net._http_response` 的 `status_code`
+  能确认。401 是 PAT 过期，403 是权限不够，404 是仓库或工作流名不对。
+- PAT 到期后 `pg_cron` 任务本身仍显示成功（HTTP 请求确实发出去了），只有响应
+  是 401。所以飞书群没收到卡片时，先查那张响应表。
 
-| 顺序 | URL | Body |
-| --- | --- | --- |
-| 1 | `https://api.github.com/repos/Heatherwyz/jujubit-web-automation/actions/workflows/offline-checks.yml/dispatches` | `{"ref":"main"}` |
-| 2 | `https://api.github.com/repos/Heatherwyz/jujubit-web-automation/actions/workflows/daily-ui-tests.yml/dispatches` | `{"ref":"main"}` |
-| 3 | `https://api.github.com/repos/Heatherwyz/jujubit-web-automation/actions/workflows/cart-ui-tests.yml/dispatches` | `{"ref":"main","inputs":{"suite":"daily"}}` |
+### 本机调度（已停用）
 
-两条任务的三次请求完全相同。首页和购物车会排队，不会并行打站点。
-
-### 本机 LaunchAgent（可选备份）
-
-这台 Mac 必须已经 `gh auth login`，且 token 带 `repo` 和 `workflow` 权限（当前
-`gh auth status` 已满足）。电脑在触发时刻需要开机且已登录用户会话；睡眠中的
-Mac 会把 LaunchAgent 延后到醒来，所以长期挂机或合盖充电更稳。
-
-先预览将要执行的命令（不真正触发）：
+`scripts/dispatch_scheduled_workflows.py` 与 `scripts/install_local_schedule.py`
+留作手动补跑的工具，LaunchAgent 已卸载、不再自动运行。手动补一次全量：
 
 ```bash
-/usr/bin/python3 scripts/dispatch_scheduled_workflows.py --dry-run --now 2026-09-18T09:00
+gh workflow run daily-regression.yml \
+  --repo Heatherwyz/jujubit-web-automation-ci --ref main
 ```
 
-安装用户级 LaunchAgent（不需要 sudo）：
+或用调度器脚本（等价，多一层班次判断与仓库名校验）：
 
 ```bash
-/usr/bin/python3 scripts/install_local_schedule.py install
+/usr/bin/python3 scripts/dispatch_scheduled_workflows.py --dry-run   # 先看命令
+/usr/bin/python3 scripts/dispatch_scheduled_workflows.py             # 真触发
 ```
 
-卸载：
-
-```bash
-/usr/bin/python3 scripts/install_local_schedule.py uninstall
-```
-
-日志写在 `~/Library/Logs/com.jujubit.dispatch-scheduled-workflows.log`。plist
-只含本仓库路径和 `gh` 的 PATH，不写入 token。
-
-如果不用 LaunchAgent，也可以自己加 crontab（同样要求这台机器在点上开机）：
-
-```cron
-0 9,21 * * * /usr/bin/python3 /Users/wyz/pro/jujubit-web-automation/scripts/dispatch_scheduled_workflows.py >> /tmp/jujubit-dispatch.log 2>&1
-```
+重新装回本机定时的话，记得先把 Supabase 那两条任务停掉，避免重复跑。
 
 ### 第一次推送到 GitHub
 
