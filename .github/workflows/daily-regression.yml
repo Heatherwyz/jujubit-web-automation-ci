@@ -227,6 +227,147 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # ---- 发布报告到 test-reports 分支 ----
+      # 只上传 Artifact 不够：那是 ZIP，要下载解压才能看到 HTML 与失败录像。
+      # 发布到分支后能直接点链接，且链接受仓库权限保护。
+      # 合并成单一工作流时漏掉了这一段，导致报告页 503、看不到录屏（2026-09-23）。
+      - name: 检出 test-reports 分支
+        id: checkout_reports
+        if: always()
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: test-reports
+          path: .report-branch
+          persist-credentials: true
+
+      - name: 发布三层报告到 test-reports 分支
+        id: publish_reports
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          HOME_RUN_DIR: ${{ steps.home_report.outputs.run_dir }}
+          HOME_RUN_ID: ${{ steps.home_report.outputs.run_id }}
+          MEM_RUN_DIR: ${{ steps.mem_report.outputs.run_dir }}
+          MEM_RUN_ID: ${{ steps.mem_report.outputs.run_id }}
+          CART_RUN_DIR: ${{ steps.cart_report.outputs.run_dir }}
+          CART_RUN_ID: ${{ steps.cart_report.outputs.run_id }}
+          KEEP: "30"
+        run: |
+          set -euo pipefail
+          branch_dir=.report-branch
+          if [[ ! -d "$branch_dir/.git" ]]; then
+            # 分支不存在时上一步 checkout 会失败并可能留下空目录，这里重建。
+            rm -rf "$branch_dir"
+            mkdir -p "$branch_dir"
+            git -C "$branch_dir" init
+            git -C "$branch_dir" remote add origin \
+              "${{ github.server_url }}/${{ github.repository }}.git"
+            git -C "$branch_dir" config \
+              http."${{ github.server_url }}/".extraheader \
+              "AUTHORIZATION: basic $(printf 'x-access-token:%s' \
+              "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)"
+          fi
+          # 无条件确保分支名正确：放进 if 里会在 checkout 已留下 .git 时被跳过，
+          # git 停在默认 master，push 报 "src refspec does not match any"。
+          git -C "$branch_dir" checkout -B test-reports
+          git -C "$branch_dir" config user.name 'github-actions[bot]'
+          git -C "$branch_dir" config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+
+          published=0
+          publish_one() {
+            local suite="$1" run_dir="$2" run_id="$3"
+            [[ -z "$run_dir" || -z "$run_id" ]] && return 0
+            [[ ! -d "$run_dir" ]] && return 0
+            # run_id 来自 run_all.py 的时间戳，再校验一次，拒绝路径分隔符。
+            if [[ ! "$run_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              echo "run_id 含非法字符，跳过 $suite：$run_id" >&2
+              return 0
+            fi
+            local report
+            report=$(find "$run_dir" -maxdepth 1 -name '*.html' -print | sort | tail -1)
+            if [[ -z "$report" ]]; then
+              echo "$suite 未找到 HTML 报告，跳过。" >&2
+              return 0
+            fi
+            local dest="$branch_dir/$suite/$run_id"
+            mkdir -p "$dest"
+            cp "$report" "$dest/"
+            # 失败截图与录像一起发布，否则报告里的相对链接全是 404。
+            # 目录名按 conftest 实际生成的来：screenshots（不是 failure-screenshots）
+            # 与 failure-videos，写错会静默跳过、报告里链接照样 404。
+            for asset in failure-videos screenshots; do
+              if [[ -d "$run_dir/$asset" ]]; then
+                # raw 是仅用于转存的中间产物，不发布。
+                cp -R "$run_dir/$asset" "$dest/"
+                rm -rf "$dest/$asset/raw"
+              fi
+            done
+            published=1
+            echo "已发布 $suite/$run_id"
+          }
+
+          publish_one home "$HOME_RUN_DIR" "$HOME_RUN_ID"
+          publish_one membership "$MEM_RUN_DIR" "$MEM_RUN_ID"
+          publish_one cart "$CART_RUN_DIR" "$CART_RUN_ID"
+
+          if [[ "$published" == "0" ]]; then
+            echo "三层都没有可发布的报告，跳过提交。"
+            exit 0
+          fi
+
+          # 每个套件只保留最近 KEEP 份，避免仓库体积膨胀。
+          for suite_dir in "$branch_dir"/*/; do
+            [[ -d "$suite_dir" ]] || continue
+            case "$(basename "$suite_dir")" in .*) continue ;; esac
+            mapfile -t runs < <(find "$suite_dir" -mindepth 1 -maxdepth 1 -type d \
+              -printf '%f\n' | sort)
+            total=${#runs[@]}
+            if (( total > KEEP )); then
+              for (( i=0; i < total - KEEP; i++ )); do
+                rm -rf "$suite_dir/${runs[i]}"
+                echo "清理旧报告：$(basename "$suite_dir")/${runs[i]}"
+              done
+            fi
+          done
+
+          # 索引页，便于翻历史。
+          {
+            echo "<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
+            echo "<title>JuJuBit 自动化测试报告</title>"
+            echo "<style>body{font-family:system-ui,sans-serif;margin:32px;max-width:900px}"
+            echo "h1{font-size:20px}h2{font-size:16px;margin-top:24px}li{margin:4px 0}</style>"
+            echo "</head><body><h1>JuJuBit 自动化测试报告</h1>"
+            echo "<p>按套件和运行时间归档，每个套件保留最近 ${KEEP} 份。</p>"
+            for s in $(find "$branch_dir" -mindepth 1 -maxdepth 1 -type d \
+                -not -name '.*' -printf '%f\n' | sort); do
+              echo "<h2>${s}</h2><ul>"
+              for r in $(find "$branch_dir/$s" -mindepth 1 -maxdepth 1 -type d \
+                  -printf '%f\n' | sort -r); do
+                f=$(find "$branch_dir/$s/$r" -maxdepth 1 -name '*.html' -printf '%f\n' \
+                  | sort | head -1)
+                [[ -z "$f" ]] && continue
+                echo "<li><a href='https://raw.githubusercontent.com/${{ github.repository }}/test-reports/${s}/${r}/${f}'>${r}</a></li>"
+              done
+              echo "</ul>"
+            done
+            echo "</body></html>"
+          } > "$branch_dir/index.html"
+
+          git -C "$branch_dir" add -A
+          if git -C "$branch_dir" diff --cached --quiet; then
+            echo "报告无变化，无需提交。"
+          else
+            git -C "$branch_dir" commit -m "发布全量回归报告 ${HOME_RUN_ID:-unknown}"
+            git -C "$branch_dir" push origin test-reports
+          fi
+
+          raw_base="https://raw.githubusercontent.com/${{ github.repository }}/test-reports"
+          echo "index_url=$raw_base/index.html" >> "$GITHUB_OUTPUT"
+          echo "报告索引：$raw_base/index.html"
+
       # ---- 最终退出码 ----
       - name: 综合退出码
         if: always()
