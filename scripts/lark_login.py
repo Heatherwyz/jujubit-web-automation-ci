@@ -18,12 +18,23 @@ profile 存在 .lark-session/profile（已在 .gitignore 中忽略，含身份�
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_DIR = ROOT / ".lark-session" / "profile"
-FIRST_DOC = "https://<LARK_TENANT_HOST>/wiki/<LARK_FIRST_DOC_TOKEN>"
+# 租户域名与首篇文档 token 都从环境变量读，不硬编码：它们标识公司的飞书
+# 空间与具体内部文档。用法：
+#   export LARK_TENANT_HOST=<租户>.feishu.cn
+#   export LARK_FIRST_DOC_TOKEN=<wiki token>
+LARK_TENANT_HOST = os.environ.get("LARK_TENANT_HOST", "")
+_FIRST_DOC_TOKEN = os.environ.get("LARK_FIRST_DOC_TOKEN", "")
+FIRST_DOC = (
+    f"https://{LARK_TENANT_HOST}/wiki/{_FIRST_DOC_TOKEN}"
+    if LARK_TENANT_HOST and _FIRST_DOC_TOKEN
+    else ""
+)
 LOGIN_HOST = "accounts.feishu.cn"
 
 
@@ -42,12 +53,29 @@ def _launch(headless: bool):
     return driver, context
 
 
+def _require_first_doc() -> str:
+    """返回首篇文档地址；缺环境变量时明确报错。
+
+    不能让空串流到 page.goto()：那会静默打开空白页，然后报"未登录"，
+    把配置缺失误导成登录态问题。
+    """
+    if not FIRST_DOC:
+        raise SystemExit(
+            "缺少飞书租户配置。请先设置环境变量：\n"
+            "  export LARK_TENANT_HOST=<租户>.feishu.cn\n"
+            "  export LARK_FIRST_DOC_TOKEN=<wiki token>\n"
+            "这两个值标识公司内部飞书空间，不写入仓库。"
+        )
+    return FIRST_DOC
+
+
 def check_login() -> int:
     """无头打开文档，判断 profile 里的登录态是否仍然有效。"""
+    first_doc = _require_first_doc()
     driver, context = _launch(headless=True)
     try:
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(FIRST_DOC, wait_until="domcontentloaded", timeout=60_000)
+        page.goto(first_doc, wait_until="domcontentloaded", timeout=60_000)
         page.wait_for_timeout(4_000)
         if LOGIN_HOST in page.url:
             print("未登录：仍被重定向到飞书登录页。")
@@ -72,11 +100,12 @@ def interactive_login() -> int:
     """
     import time
 
+    first_doc = _require_first_doc()
     driver, context = _launch(headless=False)
     logged_in = False
     try:
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(FIRST_DOC, wait_until="domcontentloaded", timeout=60_000)
+        page.goto(first_doc, wait_until="domcontentloaded", timeout=60_000)
         print("已打开独立浏览器窗口（屏幕右侧），请扫码登录飞书。", flush=True)
         print("登录成功后脚本会自动检测并保存，无需手动关窗。", flush=True)
 

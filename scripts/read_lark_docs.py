@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import time
@@ -23,7 +24,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_DIR = ROOT / ".lark-session" / "profile"
 DEFAULT_OUTPUT = ROOT / "docs" / "requirements"
-WIKI_BASE = "https://<LARK_TENANT_HOST>/wiki/"
+# 飞书租户域名从环境变量读，不硬编码在仓库里：它标识公司的飞书空间，
+# 属于内部信息。用法：export LARK_TENANT_HOST=<租户>.feishu.cn
+LARK_TENANT_HOST = os.environ.get("LARK_TENANT_HOST", "")
+WIKI_BASE = f"https://{LARK_TENANT_HOST}/wiki/" if LARK_TENANT_HOST else ""
 LOGIN_HOST = "accounts.feishu.cn"
 
 SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9]+$")

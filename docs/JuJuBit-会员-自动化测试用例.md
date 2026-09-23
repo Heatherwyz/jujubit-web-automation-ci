@@ -1,8 +1,9 @@
 # JuJuBit 会员自动化测试用例
 
-> 需求来源：飞书 wiki 14 篇文档（见 `docs/requirements/`）
-> 冲突确认：`docs/requirements/07-冲突确认结果.md`
-> 已有手工用例：93 条（`docs/requirements/06-已有会员测试用例.md`）
+> 需求来源：内部飞书 wiki 14 篇文档。原文属公司内部资产，只保留在本地
+> `docs/requirements/`（已在 `.gitignore` 中，不随仓库分发）。
+> 确认后的期望值已沉淀进 `python_playwright/membership_contract.py`，
+> 测试不依赖这些原文。
 
 ## 设计原则
 
@@ -74,11 +75,23 @@
 
 前置：已登录 Basic 用户。边界：**走到支付表单可见即止，不填卡不付款。**
 
+2026-09-20 线上实测：登录态下点 Get **整页跳转**到
+`checkout.airwallex.com/pay`，站内半屏容器不出现。用例两种形态都接受，
+断言按以下两点避开陷阱：
+
+- `.jjb-membership-checkout` 及其 `__plan` / `__price` 子节点**始终存在于
+  DOM**，未拉起支付时也预置了 `Pro Membership`、`$19.90` 这类模板文案。
+  必须按可见性判断，用 `count()` 会读到与当前档位无关的假数据。
+- 托管页按 locale 渲染：CI 的 Chromium 显示中文（`订阅 …`、`每月 预付结算`、
+  `$191.04 USD 今日应付金额`），手工打开常是英文。断言锚点必须语言无关，
+  金额取紧跟 `USD` 的那一个——中文把标签放在金额后面，按标签往后捕获会
+  抓到小计原价。
+
 | ID | 标题 | 操作 | 断言 |
 | --- | --- | --- | --- |
-| MEM-11 | Pro Monthly 拉起半屏支付 | 点 Get Pro (Monthly) | 半屏支付弹窗可见；标题含 `Pro Membership · Monthly`；卡号输入框出现 |
-| MEM-12 | Pro Yearly 拉起半屏支付 | 切 Yearly → 点 Get Pro | 展示首年 8 折价 `$191.04`；卡号输入框出现 |
-| MEM-13 | Premium Monthly 拉起半屏支付 | 点 Get Premium (Monthly) | 展示价格 `$199.90`；卡号输入框出现 |
+| MEM-11 | Pro Monthly 拉起支付 | 点 Get Pro (Monthly) | 支付表单就绪；套餐含 `Pro Membership`；账期为月付；dropin iframe 已挂载 |
+| MEM-12 | Pro Yearly 拉起支付 | 切 Yearly → 点 Get Pro | 今日应付为首年 8 折价 `$191.04`（原价 `$238.80` 减 `-$47.76`） |
+| MEM-13 | Premium Monthly 拉起支付 | 点 Get Premium (Monthly) | 支付表单就绪；套餐含 `Premium`；金额由契约层单独追踪 |
 | MEM-14 | 支付失败兜底跳全屏 | 模拟 SDK 加载失败 | 自动跳 Airwallex 全屏 Hosted Checkout |
 | MEM-15 | 支付失败弹窗文案 | 触发支付失败 | 弹窗文案 `Payment failed. Please try again.`；按钮 `Retry` |
 
@@ -88,9 +101,14 @@
 
 前置：已登录，不同档位。
 
+管理页入口是会员页的 MEMBERSHIP 视图（`/pages/vip-program?tab=membership`），
+**不是 `/account`**。后者会 302 到 Shopify 托管账户页
+（`shopify.com/<shop_id>/account/orders`），那里只有 Profile / Orders，没有
+MEMBERSHIP 页签。2026-09-20 线上实测确认。
+
 | ID | 标题 | 前置 | 断言 |
 | --- | --- | --- | --- |
-| MEM-16 | Profile Tab 排序 | 已登录 | Tab 顺序 PROFILE → ORDERS → MEMBERSHIP |
+| MEM-16 | 会员页视图 Tab 排序 | 已登录 | 会员页 role=tab 顺序 MEMBERSHIP → PLANS |
 | MEM-17 | 会员标识-付费期内连续包月 | Pro 自动续费 | `Your plan is active and renews on {date}.` |
 | MEM-18 | 会员标识-付费期内已取消 | Pro 已取消 | `Your plan expires on {date}.` |
 | MEM-19 | Basic 不展示到期时间 | Basic | 无 Billing Cycle 到期时间 |
@@ -99,7 +117,7 @@
 | MEM-22 | Primary Button-Premium 自动续费 | Premium | 按钮 `View` 可点击 |
 | MEM-23 | Daily Generations 直接展开 | 任意档位 | 展示总额度、已使用额度、重置时间 |
 | MEM-24 | Available Coupons 无券空态 | 无可用券 | `No membership coupons available yet.` |
-| MEM-25 | Billing History 无记录空态 | 无扣费记录 | `No billing history yet.` |
+| MEM-25 | Billing History 展开后正确渲染 | 已登录 | 折叠区展开后非空；有记录时每条含金额与日期，无记录时 `No billing history yet.` |
 
 ---
 
@@ -167,9 +185,8 @@ https://jujubit.ai/pages/vip-program?preview_theme_id=194830631283&entry_page=he
 
 ### 后台会员赠送（造测试数据）
 
-```
-<内部运营后台，地址不入库>
-```
+内部运营后台的会员赠送页面，地址不写入仓库。需要造多档位测试数据时
+向团队索取，或从本地 `docs/requirements/` 的需求原文中查阅。
 
 ---
 

@@ -49,7 +49,7 @@ MEMBERSHIP_CASES = [
     MembershipCase("MEM-14", "MEM-14: 支付失败兜底跳全屏", "test_mem14_payment_fallback_fullscreen"),
     MembershipCase("MEM-15", "MEM-15: 支付失败弹窗文案", "test_mem15_payment_failed_dialog"),
     # Membership 管理页
-    MembershipCase("MEM-16", "MEM-16: Profile Tab 排序", "test_mem16_profile_tab_order"),
+    MembershipCase("MEM-16", "MEM-16: 会员页视图 Tab 排序", "test_mem16_profile_tab_order"),
     MembershipCase("MEM-17", "MEM-17: 会员标识-付费期内连续包月", "test_mem17_active_renewing_status"),
     MembershipCase("MEM-18", "MEM-18: 会员标识-付费期内已取消", "test_mem18_active_cancelled_status"),
     MembershipCase("MEM-19", "MEM-19: Basic 不展示到期时间", "test_mem19_basic_no_expiry"),
@@ -58,7 +58,7 @@ MEMBERSHIP_CASES = [
     MembershipCase("MEM-22", "MEM-22: Primary Button-Premium 显示 View", "test_mem22_premium_view_button"),
     MembershipCase("MEM-23", "MEM-23: Daily Generations 直接展开", "test_mem23_daily_generations_expanded"),
     MembershipCase("MEM-24", "MEM-24: Available Coupons 无券空态", "test_mem24_no_coupons_empty_state"),
-    MembershipCase("MEM-25", "MEM-25: Billing History 无记录空态", "test_mem25_no_billing_history"),
+    MembershipCase("MEM-25", "MEM-25: Billing History 展开后正确渲染", "test_mem25_billing_history_renders"),
     # 引流入口
     MembershipCase("MEM-26", "MEM-26: Generate 入口 basic 触发", "test_mem26_generate_banner_basic"),
     MembershipCase("MEM-27", "MEM-27: Generate 入口非 basic 不展示", "test_mem27_generate_banner_hidden_for_members"),

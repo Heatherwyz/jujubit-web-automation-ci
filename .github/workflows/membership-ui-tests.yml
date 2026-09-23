@@ -39,6 +39,21 @@ jobs:
           python -m pip install -r requirements-playwright.txt
           python -m playwright install --with-deps chromium
 
+      - name: 准备登录状态
+        shell: bash
+        env:
+          PLAYWRIGHT_STORAGE_STATE_JSON: ${{ secrets.PLAYWRIGHT_STORAGE_STATE_JSON }}
+        run: |
+          # 付费墙匿名用例不需要登录态；membership_session 需要这份文件。
+          if [[ -z "$PLAYWRIGHT_STORAGE_STATE_JSON" ]]; then
+            echo "::warning::未配置 PLAYWRIGHT_STORAGE_STATE_JSON，需登录态的会员用例将记为未完成。"
+            exit 0
+          fi
+          mkdir -p artifacts/auth
+          printf '%s' "$PLAYWRIGHT_STORAGE_STATE_JSON" > artifacts/auth/storage-state.json
+          python -m json.tool artifacts/auth/storage-state.json >/dev/null
+          chmod 600 artifacts/auth/storage-state.json
+
       - name: 记录测试开始时间
         id: test_meta
         shell: bash

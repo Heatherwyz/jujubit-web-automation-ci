@@ -7,11 +7,11 @@ name: 每日全量回归（北京 09:00 / 21:00）
 # 各业务工作流（daily-ui-tests / membership-ui-tests / cart-ui-tests）
 # 仍保留 workflow_dispatch 入口，供手动单独触发。
 #
-# 北京时间 09:00 = UTC 01:00；21:00 = UTC 13:00。
+# 准时入口由 Supabase pg_cron 调 workflow_dispatch（见
+# docs/supabase-scheduler.md）。GitHub 自己的 schedule 已停用：对本仓库
+# 长期迟到 4–5 小时，与外部调度并存会让同一天重复跑全量（每轮约 40 分钟，
+# 且购物车层会真实操作测试账号）。
 on:
-  schedule:
-    - cron: "0 1 * * *"
-    - cron: "0 13 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -47,6 +47,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-playwright.txt
           python -m playwright install --with-deps chromium
+
+      - name: 准备登录状态
+        shell: bash
+        env:
+          PLAYWRIGHT_STORAGE_STATE_JSON: ${{ secrets.PLAYWRIGHT_STORAGE_STATE_JSON }}
+        run: |
+          # 会员登录态用例与购物车共用同一份 Secret；首页用例不读这个文件。
+          if [[ -z "$PLAYWRIGHT_STORAGE_STATE_JSON" ]]; then
+            echo "::warning::未配置 PLAYWRIGHT_STORAGE_STATE_JSON，需登录态的会员/购物车用例将记为未完成。"
+            exit 0
+          fi
+          mkdir -p artifacts/auth
+          printf '%s' "$PLAYWRIGHT_STORAGE_STATE_JSON" > artifacts/auth/storage-state.json
+          python -m json.tool artifacts/auth/storage-state.json >/dev/null
+          chmod 600 artifacts/auth/storage-state.json
 
       # ---- 1. 离线检查（< 30 秒）----
       - name: 离线单测

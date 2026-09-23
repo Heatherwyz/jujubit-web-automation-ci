@@ -7,7 +7,7 @@
 
 | 层 | 命令 | 条数 | 耗时 | 访问站点 | 副作用 |
 | --- | --- | --- | --- | --- | --- |
-| 离线单测 | `.venv/bin/python -m pytest -q` | 359 | 3 秒 | 否 | 无 |
+| 离线单测 | `.venv/bin/python -m pytest -q` | 390 | 3 秒 | 否 | 无 |
 | HTML 契约 | `.venv/bin/python -m pytest -c pytest-playwright.ini -m html_contract -q` | 15 | 3 秒 | 两次 GET | 无 |
 | 首页 UI | `.venv/bin/python run_all.py --platform pc`（或 `h5` / 省略跑双端） | 71 | 10-18 分钟 | 是 | 无 |
 | 会员 | `.venv/bin/python run_all.py --membership-only --platform pc` | 92 | 15-20 分钟 | 是 | 无（支付只拉起表单，不付款） |
@@ -16,12 +16,59 @@
 要点：
 
 - 购物车层有外部副作用（会在测试账号下真实生成模型并加购），执行前说明清楚。
-- **会员层的支付用例只走到拉起 Airwallex 表单**（断言弹窗出现、SDK 挂载、
-  卡号输入框可见），不填卡、不点 Pay Now、不产生真实扣款。页面对象刻意不提供
-  填卡与提交方法，`tests/test_membership_suite_wiring.py` 会守住这条边界。
+- **会员层的支付用例只走到拉起 Airwallex 表单**（断言表单就绪、SDK 挂载），
+  不填卡、不点 Pay Now、不产生真实扣款。页面对象刻意不提供填卡与提交方法，
+  `tests/test_membership_suite_wiring.py` 会守住这条边界。
 - 会员的管理页与支付拉起用例需要登录态（`membership_session` marker）。
-  缺登录态时它们会如实报"未完成"而不是失败——线上未登录点 Get 会跳 Shopify
-  登录页，半屏支付不会出现。
+  `page` fixture 会为这个 marker 加载 `artifacts/auth/storage-state.json`。
+  缺文件或 Cookie 过期时它们会如实报"未完成"而不是失败。
+  每日全量与会员工作流都会把这份 Secret 写回 Runner 上的同一路径。
+
+### 登录态怎么拿
+
+Shopify Customer Accounts 的会话凭据是 `_shopify_essential`（HttpOnly，
+不是旧版 legacy 的 `_secure_customer_sig`）。页面脚本、DevTools 的 Cookie
+面板、内置浏览器的自动化接口都读不到值，必须用下面两种方式之一：
+
+```bash
+# 首选：内置窗口已登录过时，直接从它的 profile 提取（免验证码）
+.venv/bin/python scripts/import_iab_storage_state.py
+
+# 备选：开独立浏览器手工登录一次（要收邮箱验证码）
+.venv/bin/python scripts/export_storage_state.py --email <账号邮箱>
+
+gh secret set PLAYWRIGHT_STORAGE_STATE_JSON < artifacts/auth/storage-state.json
+```
+
+**登录入口必须是 `/customer_authentication/login`。** 它和 `/account/login`
+是两条 OAuth 链路，client_id 不同：后者回调到
+`shopify.com/<shop_id>/account/callback`，只给 Shopify 托管账户页种会话，
+店面仍是未登录。踩过的坑是托管账户页能打开、订单都能看，但会员页 overview
+仍显示 `Log in to view your plan`，`membership_session` 用例照样拿不到数据。
+
+判定登录成功只认一条：会员页 overview 显示账号邮箱。付费墙上的
+`Current Plan` 不算——未登录用户看到的 Basic 默认档也是这样。
+
+### 会员用例的四个断言陷阱
+
+都是"手工验证能过、用例必败"或"恒真恒假"的写法，已在离线层钉住
+（`PaymentAssertionTrapTests`、`MembershipAdminPageTests`）：
+
+- **`.jjb-membership-checkout` 常驻 DOM**，未拉起支付时就存在（隐藏态），
+  且 `__plan` / `__price` 预置了 `Pro Membership`、`$19.90` 模板文案。
+  用 `count()` 判断会误判成"已出现"并读到与当前档位无关的假数据。一律用
+  可见性判断（`_visible_text` / `payment_layer_visible`）。
+- **Airwallex 托管页按 locale 渲染**：CI 的 Chromium 显示中文
+  （`订阅 …`、`每月 预付结算`、`$191.04 USD 今日应付金额`），手工打开常是
+  英文。断言锚点必须语言无关；金额取紧跟 `USD` 的那个——中文把标签放在
+  金额后面，按标签往后捕获会抓到小计原价，把已生效的折扣误判成没打折。
+- **管理页入口是会员页的 MEMBERSHIP 视图**，不是 `/account`。后者 302 到
+  Shopify 托管页，只有 Profile / Orders。页签是 `role=tab` 按钮，
+  `a[href*="membership"]` 实测 0 命中、恒假。
+- **两层弹窗都要关**：newsletter 弹窗拦匿名用例，会员 offer 弹窗
+  （登录态下约 9 秒才渲染成 900px 遮罩）拦登录用例。只关一个仍会报
+  `intercepts pointer events` 的 click timeout。另外 `page.reload()` 必须
+  指定 `wait_until="domcontentloaded"`，默认等 `load` 会 30 秒超时。
 - 默认回归（`run_all.py` 不带参数）**不含**会员层，需显式 `--membership`
   或 `--membership-only`。
 - 单跑某一条：`pytest -c pytest-playwright.ini "路径::函数名" --pw-platform pc`
