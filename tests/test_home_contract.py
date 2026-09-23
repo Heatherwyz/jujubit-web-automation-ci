@@ -67,7 +67,6 @@ def compliant_html(**overrides) -> str:
         "categories": (
             '<a href="/collections/art-toy">FIGURINES</a>'
             '<a href="/collections/fdm">FDM LAMPS</a>'
-            '<a href="/collections/crystal-bracelets">Crystal Bracelets</a>'
             '<a href="/collections/keycaps">Keycaps</a>'
             '<a href="/collections/photo-board">Photo Boards</a>'
         ),
@@ -177,7 +176,6 @@ class AnchorTests(unittest.TestCase):
         html = compliant_html(
             categories='<a href="/collections/art-toy">FIGURINES</a>'
             '<a href="/collections/fdm">FDM LAMPS</a>'
-            '<a href="/collections/crystal-bracelets">Crystal Bracelets</a>'
             '<a href="/collections/keycaps">Keycaps</a>'
             '<a href="/collections/moved">Photo Boards</a>'
         )

@@ -7,7 +7,7 @@
 
 | 层 | 命令 | 条数 | 耗时 | 访问站点 | 副作用 |
 | --- | --- | --- | --- | --- | --- |
-| 离线单测 | `.venv/bin/python -m pytest -q` | 390 | 3 秒 | 否 | 无 |
+| 离线单测 | `.venv/bin/python -m pytest -q` | 396 | 3 秒 | 否 | 无 |
 | HTML 契约 | `.venv/bin/python -m pytest -c pytest-playwright.ini -m html_contract -q` | 15 | 3 秒 | 两次 GET | 无 |
 | 首页 UI | `.venv/bin/python run_all.py --platform pc`（或 `h5` / 省略跑双端） | 71 | 10-18 分钟 | 是 | 无 |
 | 会员 | `.venv/bin/python run_all.py --membership-only --platform pc` | 92 | 15-20 分钟 | 是 | 无（支付只拉起表单，不付款） |

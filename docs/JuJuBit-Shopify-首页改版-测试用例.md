@@ -103,7 +103,7 @@
 7. 埋点事件名称、公共字段、曝光阈值、去重周期和验收环境尚未最终确定，暂不能形成稳定自动化断言。
 8. PC/H5 独立媒体缺失一端配置时的回退优先级未明确。
 9. “Hero 始终第一业务区块”与商家在 Theme Editor 中拖动 Hero 到其他位置时，系统应禁止拖动还是保存后强制纠正，需要明确。
-10. Header Categories 当前已确认的核心入口展示文案为 FIGURINES、FDM LAMPS、Crystal Bracelets、Keycaps、Photo Boards；其中 FIGURINES 仍指向 `art-toy` 集合。线上还配置了 Keychains，不能因为额外入口而判错。
+10. Header Categories 当前已确认的核心入口展示文案为 FIGURINES、FDM LAMPS、Keycaps、Photo Boards；其中 FIGURINES 仍指向 `art-toy` 集合。线上还配置了 Keychains，不能因为额外入口而判错。Crystal Bracelets 已于 2026-09-22 下线，不再作为品类入口基准；但 SEO title 与 og/twitter 文案仍含该词，属主题侧未同步，单独跟踪。
 11. `review_images` 仅规定全角 `｜`；是否兼容半角 `|` 和历史逗号格式需确认。
 
 ## 5. 自动化实施分层
@@ -122,8 +122,8 @@
 | 文案/SEO | 首页元数据 | P0 | `title` 精确为 `JuJuBit \| Custom Figurines, Crystal Bracelets & Art Toys`；meta description 精确为 `JuJuBit makes custom figurines from your photo, crystal bracelets, and art toys. AI-assisted design, worldwide shipping. Turn your photo into a 3D collectible.`，且各仅一个 | UI/API |
 | 文案/SEO | Hero 的页面主题 | P0 | 全页仅一个 H1，精确为 `Create Your Own Custom Figurine From a Photo`；H1 为 SSR HTML 真实文字，非图片叠字；每个 slide 标题为 H2 或普通文字 | UI/API |
 | 技术文档 | Logo 无障碍文本 | P0 | Logo 图片 `alt` 精确为 `JuJuBit - Custom 3D Figurines`；Logo 链接到 `/` | UI |
-| PRD/文案 | Header 入口及品类二级菜单 | P0 | Header 有真实文字 `<a>`；一级导航均可点击；Categories 至少包含当前配置的 FIGURINES、FDM LAMPS、Crystal Bracelets、Keycaps、Photo Boards；额外的 Keychains 等入口不判错；不渲染三级菜单 | UI/API |
-| 文案/PRD | Header URL 基准 | P0 | Create 使用主题实际配置的有效地址；Templates=`/collections/templates-create-your-own`，How It Works=`/pages/how-it-works`；当前品类链接分别为 `art-toy`、`fdm`、`crystal-bracelets`、`keycaps`、`photo-board` | UI/API |
+| PRD/文案 | Header 入口及品类二级菜单 | P0 | Header 有真实文字 `<a>`；一级导航均可点击；Categories 至少包含当前配置的 FIGURINES、FDM LAMPS、Keycaps、Photo Boards；额外的 Keychains 等入口不判错；不渲染三级菜单 | UI/API |
+| 文案/PRD | Header URL 基准 | P0 | Create 使用主题实际配置的有效地址；Templates=`/collections/templates-create-your-own`，How It Works=`/pages/how-it-works`；当前品类链接分别为 `art-toy`、`fdm`、`keycaps`、`photo-board` | UI/API |
 | 技术文档/文案 | Hero 图片与 CTA | P0 | 首屏媒体优先加载且不使用 `loading=lazy`；产品图 alt 使用描述性文本，装饰背景 `alt=""`；CTA 为真实链接，默认文案 `Create Your Figurine`，并能打开主题实际配置的有效页面 | UI |
 | PRD/文案 | Template Entry | P1 | 卡片名为 HTML 文字；每卡至少一个有意义的 `<a>`；默认风格入口可访问，查看全部链接至 `/collections/templates-create-your-own` | UI/API |
 | PRD/文案 | How It Works 与 HowTo 数据源 | P0 | 四步标题及描述均在 SSR HTML 中可见；若输出 HowTo JSON-LD，Schema 步骤文本与页面对应字段逐字一致 | UI/API |
@@ -145,7 +145,7 @@
 | HOME-SEO-003 | JSON-LD | P0 | 页面输出结构化数据 | 遍历所有 `application/ld+json` 并解析 | JSON 均可解析；Organization、WebSite、FAQPage、HowTo 类型不重复、不使用空字段，URL 与当前正式域名一致 | UI/API |
 | HOME-SEO-004 | 图片 alt | P1 | 首页所有业务图片已配置 | 收集所有 `img`，区分功能图和装饰图 | 功能图 alt 非空、不重复、不使用文件名；装饰图 alt 为空；所有 alt 不含医疗功效禁用词 | UI |
 | HOME-HDR-001 | Header | P0 | 主菜单按文案配置 | PC 展开 Categories，H5 打开菜单，收集一级/二级入口 | 两端均包含规定入口；入口均为真实 `<a href>`；PC/H5 目标 URL 一致；无三级菜单节点 | UI |
-| HOME-HDR-002 | Header | P0 | Categories 配置核心品类 | 逐个真实点击当前核心品类链接并记录落地 URL | FIGURINES、FDM LAMPS、Crystal Bracelets、Keycaps、Photo Boards 展示名和目标集合匹配；其中 FIGURINES 指向 `art-toy`；均非 404/5xx；额外入口不判错 | UI/API |
+| HOME-HDR-002 | Header | P0 | Categories 配置核心品类 | 逐个真实点击当前核心品类链接并记录落地 URL | FIGURINES、FDM LAMPS、Keycaps、Photo Boards 展示名和目标集合匹配；其中 FIGURINES 指向 `art-toy`；均非 404/5xx；额外入口不判错 | UI/API |
 | HOME-HDR-003 | Header | P1 | 导航中配置三级菜单 | PC hover、键盘展开及 H5 展开二级菜单 | 第三级不渲染；二级入口仍可聚焦、点击和关闭，布局无溢出 | UI/人工 |
 | HOME-HERO-001 | Hero | P0 | 同一端同时配置图片和视频 | PC/H5 分别加载首页并监控媒体请求和可见元素 | 图片优先展示；视频不自动播放且不抢占 LCP；另一端的媒体不被错误展示 | UI |
 | HOME-HERO-002 | Hero | P1 | PC 或 H5 仅配置一种媒体，另一端为空 | 分别以 769px、768px 加载 | 按最终确认的跨端回退规则展示；无破图、空白容器或重复媒体 | UI/待确认 |

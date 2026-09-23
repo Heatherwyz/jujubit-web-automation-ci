@@ -55,7 +55,7 @@
 | 11 | 公共 Header / Mega Menu | Figurines / FIGURINES | [https://jujubit.ai/collections/art-toy](https://jujubit.ai/collections/art-toy) | 站内链接 | 可见 |
 | 12 | 公共 Header / Mega Menu | Keychains / KEYCHAINS | [https://jujubit.ai/collections/keychain-pod](https://jujubit.ai/collections/keychain-pod) | 站内链接 | 可见 |
 | 13 | 公共 Header / Mega Menu | FDM LAMPS / EXPLORE | [https://jujubit.ai/collections/fdm](https://jujubit.ai/collections/fdm) | 站内链接 | 可见 |
-| 14 | 公共 Header / Mega Menu | Crystal Bracelets / CRYSTAL BRACELETS | [https://jujubit.ai/collections/crystal-bracelets](https://jujubit.ai/collections/crystal-bracelets) | 站内链接 | 可见 |
+| 14 | 公共 Header / Mega Menu | Crystal Bracelets / CRYSTAL BRACELETS | [https://jujubit.ai/collections/crystal-bracelets](https://jujubit.ai/collections/crystal-bracelets) | 站内链接 | 已下线（2026-09-22 起首页无此入口） |
 | 15 | 公共 Header / Mega Menu | Keycaps / KEYCAPS | [https://jujubit.ai/collections/keycaps](https://jujubit.ai/collections/keycaps) | 站内链接 | 可见 |
 | 16 | 公共 Header / Mega Menu | Photo Boards / PHOTO BOARDS | [https://jujubit.ai/collections/photo-board](https://jujubit.ai/collections/photo-board) | 站内链接 | 可见 |
 | 17 | 公共 Header / Mega Menu | How It Works / View All | [https://jujubit.ai/pages/how-it-works](https://jujubit.ai/pages/how-it-works) | 站内链接 | 可见 |

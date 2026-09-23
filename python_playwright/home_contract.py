@@ -39,10 +39,14 @@ EXPECTED_HEADER_CATEGORY_LINKS = {
     # 仍然是 art-toy。按当前可见文案验收，避免把旧名称误报为缺少链接。
     "FIGURINES": "/collections/art-toy",
     "FDM LAMPS": "/collections/fdm",
-    "Crystal Bracelets": "/collections/crystal-bracelets",
     "Keycaps": "/collections/keycaps",
     "Photo Boards": "/collections/photo-board",
 }
+# Crystal Bracelets 已下线（2026-09-22 确认）：线上首页已无该品类导航入口，
+# 原地址 /collections/crystal-bracelets 不再作为验收基准。需求取消就删断言，
+# 不要保留后再放宽，否则下线本身就不会被任何用例发现。
+# 注意：SEO title 与 og/twitter 元数据仍含 "Crystal Bracelets"（见 EXPECTED_TITLE），
+# 那是主题侧尚未同步的文案，属于独立问题，不在本字典的职责范围。
 # 核心版块文案由主题配置，取稳定标识而非营销长句，避免文案微调即报红。
 EXPECTED_SECTION_MARKERS = ("Pick Your Style", "How It Works")
 
