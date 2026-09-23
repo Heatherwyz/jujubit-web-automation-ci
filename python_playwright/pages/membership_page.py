@@ -376,6 +376,38 @@ class MembershipPage:
             for marker in ("/authentication/", "/account/login", "/login")
         )
 
+    def storefront_signed_out(self) -> bool:
+        """会员页 overview 是否处于未登录态。
+
+        登录态失效有两种形态，只认跳登录页会漏判一半：
+        1. 整页跳 shopify.com/authentication/...（on_customer_login_page）
+        2. 点 Get 后跳 ?plan=PRO&billingCycle=... 再**跳回会员页**，
+           压根不去登录页，支付弹窗永不出现（2026-09-23 实测 MEM-11/12/13
+           三条全被误报成"支付未拉起"的业务失败）。
+
+        第 2 种只能靠 overview 判定：未登录时它显示 "Log in to view your
+        plan"，登录后显示账号邮箱。
+        """
+        try:
+            return bool(
+                self.page.evaluate(
+                    """(selSignedOut) => {
+                        const explicit = document.querySelector(selSignedOut);
+                        if (explicit && explicit.offsetParent) return true;
+                        const ov = document.querySelector('.jjb-membership-overview');
+                        if (!ov) return false;
+                        const text = ov.innerText || '';
+                        if (/log in to view your plan/i.test(text)) return true;
+                        // 有 overview 但读不到邮箱，同样按未登录处理。
+                        return !/[\\w.+-]+@[\\w.-]+\\.\\w+/.test(text);
+                    }""",
+                    SEL_OVERVIEW_SIGNED_OUT,
+                )
+            )
+        except PlaywrightError:
+            # 正在跳转时读不到 DOM，交给下一轮判断。
+            return False
+
     def on_airwallex_hosted_page(self) -> bool:
         """当前是否已跳到 Airwallex 全屏托管支付页。
 
@@ -455,6 +487,14 @@ class MembershipPage:
                     "loadingVisible"
                 ):
                     return
+            # 回到会员页且 overview 是未登录态：站点把支付流程退回了。
+            # 这是登录态失效的第二种形态（不跳登录页，跳 ?plan=... 再跳回），
+            # 必须报未完成而不是耗完超时再误判成"支付未拉起"。
+            if self.storefront_signed_out():
+                raise MembershipLoginRequiredError(
+                    "缺少有效登录态：点 Get 后被退回会员页，overview 仍要求登录，"
+                    f"半屏支付未拉起。当前地址 {self.page.url[:120]}"
+                )
             self.page.wait_for_timeout(500)
 
         raise AssertionError(
