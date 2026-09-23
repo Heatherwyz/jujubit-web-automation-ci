@@ -14,7 +14,10 @@ on:
       - main
   workflow_dispatch:
   # schedule 已停用：离线检查在每次 push/PR 时已自动跑，不需要定时。
-    - cron: "0 13 * * *"
+  # 删 schedule 时必须连 cron 一起删——只删 "schedule:" 会留下悬空的
+  # "- cron:"，它被 YAML 解析成 workflow_dispatch 的值，GitHub 判定触发器
+  # 畸形后直接不分配 Runner，push 触发全部 0 job 秒失败（2026-09-23 实测
+  # 连续 3 次）。
 
 # 与访问站点的工作流不共用并发组：本工作流不产生任何站点请求，
 # 不需要为避免撞 WAF 而排队。
