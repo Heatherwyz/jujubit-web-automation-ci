@@ -20,11 +20,20 @@ from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
+# 已登记的文案债：Crystal Bracelets 品类已于 2026-09-22 下线，但 SEO 文案
+# 仍在售卖该品类。下面两个常量刻意保持与线上一致——把它们改成"正确文案"会让
+# 断言立刻变红，而红的原因是我们自己改了期望值，不是站点又坏了；反过来若擅自
+# 删掉 Crystal Bracelets 字样，线上文案就再没有任何用例盯着。
+# 处置：等 SEO 侧给出新文案后，同时更新这两个常量并从
+# KNOWN_RETIRED_CATEGORY_IN_SEO_COPY 移除该品类。
 EXPECTED_TITLE = "JuJuBit | Custom Figurines, Crystal Bracelets & Art Toys"
 EXPECTED_DESCRIPTION = (
     "JuJuBit makes custom figurines from your photo, crystal bracelets, and art toys. "
     "AI-assisted design, worldwide shipping. Turn your photo into a 3D collectible."
 )
+# 已下线但仍出现在 SEO 文案里的品类。留作显式登记，避免"导航已删、文案还在"
+# 这件事只存在于某次对话里；离线单测会核对它确实还在 title/description 中。
+KNOWN_RETIRED_CATEGORY_IN_SEO_COPY = frozenset({"Crystal Bracelets"})
 EXPECTED_H1 = "Create Your Own Custom Figurine From a Photo"
 # 线上 Logo 是 inline SVG（无 img 子元素），无障碍名称由锚点的 aria-label 提供。
 # 历史常量写的是一个全站出现 0 次的 alt 字符串，浏览器层因为走了

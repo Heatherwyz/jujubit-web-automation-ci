@@ -105,6 +105,7 @@
 9. “Hero 始终第一业务区块”与商家在 Theme Editor 中拖动 Hero 到其他位置时，系统应禁止拖动还是保存后强制纠正，需要明确。
 10. Header Categories 当前已确认的核心入口展示文案为 FIGURINES、FDM LAMPS、Keycaps、Photo Boards；其中 FIGURINES 仍指向 `art-toy` 集合。线上还配置了 Keychains，不能因为额外入口而判错。Crystal Bracelets 已于 2026-09-22 下线，不再作为品类入口基准；但 SEO title 与 og/twitter 文案仍含该词，属主题侧未同步，单独跟踪。
 11. `review_images` 仅规定全角 `｜`；是否兼容半角 `|` 和历史逗号格式需确认。
+12. **Crystal Bracelets 下线后的 SEO 文案未同步（2026-09-22 登记）。** 首页 `title`、`og:title`、`twitter:title` 仍为 `JuJuBit | Custom Figurines, Crystal Bracelets & Art Toys`，`meta description` 仍含 `crystal bracelets`，但该品类导航入口已下线。自动化侧刻意保持期望值与线上一致（见 `home_contract.KNOWN_RETIRED_CATEGORY_IN_SEO_COPY`）：改成"正确文案"会让断言红在我们自己改期望值上，删掉该词则线上文案再无用例覆盖。需 SEO 给出新 title/description 后同步常量并移除该登记。
 
 ## 5. 自动化实施分层
 

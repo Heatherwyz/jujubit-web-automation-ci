@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from typing import Any, Optional
@@ -150,6 +151,55 @@ SEL_OVERVIEW_SIGNED_OUT = ".jjb-membership-overview__signed-out"
 # Billing History 折叠区：默认收起，展开前 content 恒为空串。
 SEL_OVERVIEW_BILLING_CONTENT = ".jjb-membership-overview__billing-content"
 SEL_OVERVIEW_BILLING_CARD = ".jjb-membership-overview__billing-card"
+
+# 购物车 / Checkout 的会员引流入口（主题 custom-cart.js 渲染）。
+# 历史写法找的是 membership-banner / vip-banner / upgrade-banner，这三个在全站
+# 0 命中，于是 MEM-26/33 长期被判成"banner 尚未上线"。2026-09-23 读主题脚本
+# 确认真实类名是 cc-membership-entry。
+SEL_CART_MEMBERSHIP_ENTRY = ".cc-membership-entry"
+SEL_CART_MEMBERSHIP_ENTRY_COPY = ".cc-membership-entry__copy"
+SEL_CART_MEMBERSHIP_ENTRY_ACTION = ".cc-membership-entry__action"
+
+# banner 文案规则（同源于 custom-cart.js 的 membershipSavingCopy）：
+# - 折扣已超 $100：固定 "Members: save more"
+# - 否则按原价 20% 计，下限 $20、上限 $100，渲染成 "Members: save $XX"
+# - 读不到金额：回退 "Unlock member-only savings"
+BANNER_SAVE_MORE_TEXT = "Members: save more"
+BANNER_FALLBACK_TEXT = "Unlock member-only savings"
+BANNER_ACTION_TEXT = "Upgrade"
+BANNER_SAVING_RATE = 0.2
+BANNER_SAVING_MIN_CENTS = 2_000
+BANNER_SAVING_MAX_CENTS = 10_000
+BANNER_DISCOUNT_SAVE_MORE_CENTS = 10_000
+
+
+def expected_banner_copy(subtotal_cents: int, discount_cents: int = 0) -> str:
+    """按主题规则算出 banner 应显示的文案。
+
+    与 custom-cart.js 的 membershipSavingCopy 同源，写成纯函数是为了能离线
+    单测，而不是在用例里重算一遍百分比——那样算错了两边一起错，断言恒真。
+
+    金额格式跟随主题：整元不带小数（$20），非整元保留两位（$20.50）。
+    """
+    if discount_cents > BANNER_DISCOUNT_SAVE_MORE_CENTS:
+        return BANNER_SAVE_MORE_TEXT
+    if subtotal_cents <= 0:
+        return BANNER_FALLBACK_TEXT
+    # JS 的 Math.round 对 .5 向上取整，Python 的 round 是银行家舍入，必须显式处理。
+    raw = math.floor(subtotal_cents * BANNER_SAVING_RATE + 0.5)
+    saving = min(
+        BANNER_SAVING_MAX_CENTS, max(BANNER_SAVING_MIN_CENTS, raw)
+    )
+    if saving % 100 == 0:
+        return f"Members: save ${saving // 100}"
+    return f"Members: save ${saving / 100:.2f}"
+
+# 埋点事件名。取自主题 jjb-membership.js 与 custom-cart.js（2026-09-23 读源码
+# 确认），不是按文档猜的——早期用例因为拿不到真实事件名而全部无条件跳过。
+EVENT_ENTRY_VIEW = "membership_entry_view"
+EVENT_PLAN_IMPRESSION = "membership_plan_impression"
+EVENT_PLAN_CLICK = "membership_plan_click"
+EVENT_CART_ENTRY_CLICK = "membership_entry_click"
 
 # 实验就绪标记：主题注入实验后会加这个 class，可用于等待
 SEL_EXPERIMENT_READY = ".jjb-membership-experiment-ready"
@@ -657,6 +707,31 @@ class MembershipPage:
             return btn.first.inner_text().strip()
         return ""
 
+    def current_tier(self) -> str:
+        """当前登录账号的会员档位，读不到则返回空串。
+
+        取付费墙容器的 ``data-membership-plan``，不要扫 overview 的可见文本：
+        权益区里本身就有 "Upgrade to Premium for more generations" 这类文案，
+        按文本匹配会把 Basic 账号误判成 Premium，断言随之假过。
+
+        线上该属性的取值是大写的 BASIC / PRO / PREMIUM，另有 PRIME 作为
+        PREMIUM 的历史别名（2026-09-23 实测 CSS 里两者同时被样式命中）。
+        用于按账号实际档位决定断言，而不是把测试账号邮箱写进代码——本仓库
+        是公开仓库，不放任何账号标识。
+        """
+        paywall = self.page.locator(SEL_PAYWALL)
+        if not paywall.count():
+            return ""
+        raw = (paywall.first.get_attribute("data-membership-plan") or "").strip()
+        if not raw:
+            return ""
+        normalized = raw.upper()
+        if normalized == "PRIME":
+            return "Premium"
+        return {"BASIC": "Basic", "PRO": "Pro", "PREMIUM": "Premium"}.get(
+            normalized, ""
+        )
+
     def daily_generations_expanded(self) -> bool:
         """Daily Generations 区域是否直接展开。"""
         section = self.page.locator(
@@ -711,23 +786,205 @@ class MembershipPage:
     # ---- 引流 Banner ----
 
     def banner_text(self, page_name: str = "") -> str:
-        """当前页面的会员引流 banner 文案。"""
-        banner = self.page.locator(
-            "[class*='membership-banner'], [class*='vip-banner'], [class*='upgrade-banner']"
-        )
+        """当前页面的会员引流 banner 文案。
+
+        线上真实类名是 ``.cc-membership-entry``（由主题 custom-cart.js 渲染），
+        不是历史写法里的 ``membership-banner`` / ``vip-banner``——那两个在全站
+        0 命中，导致 MEM-26/33 长期被判成"banner 未上线"（2026-09-23 核实）。
+        """
+        banner = self.page.locator(SEL_CART_MEMBERSHIP_ENTRY)
         if banner.count():
             return banner.first.inner_text().strip()
-        # 回退：搜含 Members 文案的区域
-        members = self.page.locator(":has-text('Members')").filter(
-            has_text=re.compile(r"Members\s*(save|:)", re.I)
-        )
-        if members.count():
-            return members.first.inner_text().strip()
+        copy = self.page.locator(SEL_CART_MEMBERSHIP_ENTRY_COPY)
+        if copy.count():
+            return copy.first.inner_text().strip()
         return ""
 
     def banner_visible(self) -> bool:
         """会员引流 banner 是否可见。"""
         return bool(self.banner_text())
+
+    def banner_action_text(self) -> str:
+        """banner 上的行动按钮文案（线上为 Upgrade）。"""
+        action = self.page.locator(SEL_CART_MEMBERSHIP_ENTRY_ACTION)
+        if action.count():
+            return action.first.inner_text().strip()
+        return ""
+
+    def banner_entry_page(self) -> str:
+        """banner 按钮回跳付费墙时透传的 entry_page。"""
+        action = self.page.locator(SEL_CART_MEMBERSHIP_ENTRY_ACTION)
+        if not action.count():
+            return ""
+        fallback = action.first.get_attribute("data-fallback-url") or ""
+        match = re.search(r"entry_page=([^&]+)", fallback)
+        return match.group(1) if match else ""
+
+    def set_cart_membership_subtotal(
+        self, subtotal_cents: int, *, discount_cents: int = 0
+    ) -> None:
+        """构造购物车金额并重渲染会员入口，避免真实加购的副作用。
+
+        沿用 cart_page.set_shipping_boundary_total 的既有做法：只改前端组件的
+        金额字段。真实造 $250 购物车要先生成模型再加购，既慢又会污染测试账号，
+        而这几条只验证文案换算规则，不验证结算金额。
+
+        主题的 membershipSavingCopy 读 getOriginalSubtotalCents()（original_total
+        优先，回退 items_subtotal_price）与 cart.total_discount，所以三个字段都要设。
+        """
+        assert subtotal_cents >= 0 and discount_cents >= 0
+        self.page.wait_for_function(
+            "() => customElements.get('custom-cart') !== undefined",
+            timeout=TIMEOUT_BUSINESS,
+        )
+        result = self.page.evaluate(
+            """([subtotal, discount]) => {
+                const host = document.querySelector('custom-cart');
+                if (!host) {
+                    return {ok: false, reason: '页面没有 custom-cart 组件'};
+                }
+                if (typeof host.membershipEntryHtml !== 'function') {
+                    return {ok: false, reason: '组件缺少 membershipEntryHtml()'};
+                }
+                // membershipEntryHtml() 开头就检查这个标志，为假直接返回空串。
+                // 它由主题的 getMembershipCartEntryEnabled() 决定，而该函数受
+                // 服务端实验分配控制、返回 false（2026-09-23 实测），测试侧无法
+                // 影响。这里直接置真：本组用例验证的是"入口开启后的文案换算"，
+                // 实验分配本身由 MEM-27 覆盖。
+                host._membershipCartEntryEnabled = true;
+                host.cart = {
+                    ...(host.cart || {}),
+                    item_count: Math.max(1, (host.cart && host.cart.item_count) || 1),
+                    original_total_price: subtotal,
+                    items_subtotal_price: subtotal,
+                    total_price: subtotal,
+                    total_discount: discount,
+                };
+                const slot = host.querySelector('.cc-membership-slot');
+                if (!slot) {
+                    return {ok: false, reason: '未找到 .cc-membership-slot 挂载点'};
+                }
+                slot.innerHTML = host.membershipEntryHtml('cart_whole');
+                return {ok: true, html: slot.innerHTML.slice(0, 200)};
+            }""",
+            [subtotal_cents, discount_cents],
+        )
+        assert result and result.get("ok"), (
+            "构造购物车会员入口失败："
+            f"{(result or {}).get('reason', '页面未返回状态')}"
+        )
+
+    def record_tracked_events(self) -> None:
+        """开始记录主题上报的埋点事件。必须在导航之前调用。
+
+        拦 ``window.zlog.track`` 而不是抓网络：zlog 会异步转发到 GA / monorail，
+        可能批量合并、被广告拦截器掐断，或因 ``awaitGa4`` 延迟到断言之后——那样
+        断言的是投递渠道，不是主题有没有按约定上报。这里断言的是契约本身：
+        主题用什么事件名、带什么参数调用了 track。
+
+        zlog 由另一个脚本后置注入，直接赋值会被覆盖，所以用属性 setter 包住：
+        无论 zlog 何时被赋值，track 都会先记录再转发给真实实现。
+        """
+        self.page.add_init_script(
+            """
+            (() => {
+                window.__jjbTrackedEvents = [];
+                const record = (name, params) => {
+                    try {
+                        window.__jjbTrackedEvents.push({
+                            name: String(name),
+                            params: params || {},
+                        });
+                    } catch (e) {}
+                };
+                // 只包一次 track 不够：zlog 脚本会在自己初始化完成后，往同一个
+                // 对象上重新赋值 track，把包装覆盖掉——实测表现是 __jjbWrapped
+                // 为 true 但一条事件都收不到。所以改成守住 track 这个属性本身：
+                // 谁再赋值，都会被重新包一层。
+                const wrap = (target) => {
+                    if (!target || target.__jjbWrapped) return target;
+                    let inner = target.track;
+                    const proxy = function (name, params, options) {
+                        record(name, params);
+                        if (typeof inner === 'function') {
+                            return inner.apply(this, arguments);
+                        }
+                        return undefined;
+                    };
+                    try {
+                        Object.defineProperty(target, 'track', {
+                            configurable: true,
+                            get: () => proxy,
+                            set: (value) => {
+                                inner = value;
+                            },
+                        });
+                        target.__jjbWrapped = true;
+                    } catch (e) {
+                        target.track = proxy;
+                    }
+                    return target;
+                };
+                let current = wrap(window.zlog) || undefined;
+                Object.defineProperty(window, 'zlog', {
+                    configurable: true,
+                    get: () => current,
+                    set: (value) => {
+                        current = wrap(value);
+                    },
+                });
+                // zlog 尚未注入时也要能记录，否则早于脚本的上报会丢。
+                if (!current) {
+                    current = wrap({});
+                }
+            })();
+            """
+        )
+
+    def tracked_events(self, name: str = "") -> list[dict]:
+        """取已记录的埋点事件，可按事件名过滤。"""
+        events = self.page.evaluate("() => window.__jjbTrackedEvents || []")
+        if not isinstance(events, list):
+            return []
+        if not name:
+            return events
+        return [item for item in events if item.get("name") == name]
+
+    def wait_for_tracked_event(
+        self, name: str, timeout: int = TIMEOUT_BUSINESS
+    ) -> dict:
+        """等某个埋点事件出现并返回它；超时返回空字典。"""
+        deadline = time.monotonic() + timeout / 1000
+        while time.monotonic() < deadline:
+            matched = self.tracked_events(name)
+            if matched:
+                return matched[0]
+            self.page.wait_for_timeout(300)
+        return {}
+
+    def enable_cart_membership_entry(self) -> None:
+        """让购物车的会员引流入口对当前会话生效。
+
+        主题的判定链（custom-cart.js / cart 模板，2026-09-23 读源码确认）：
+        ``isTest()`` 认 ``localStorage._shop_mode === 'test'``，此时实验开关
+        走 ``window.jjbUtils.overrideExperiment``；入口还要求
+        ``getMembershipCartEntryEnabled()`` 为真。VIP 账号会**隐藏**入口
+        （``isVipCustomer()`` 直接返回空串），所以这条链路只对非会员有效。
+        """
+        self.page.add_init_script(
+            """
+            try { localStorage.setItem('_shop_mode', 'test'); } catch (e) {}
+            window.jjbUtils = window.jjbUtils || {};
+            window.jjbUtils.overrideExperiment = function () {
+                return { get: function (key, fallback) {
+                    return key === 'enable' ? true : fallback;
+                } };
+            };
+            window.jjbUtils.getMembershipCartEntryEnabled = function () {
+                return Promise.resolve(true);
+            };
+            """
+        )
 
     # ---- 弹窗 ----
 

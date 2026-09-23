@@ -15,6 +15,7 @@ import ast
 import unittest
 from pathlib import Path
 
+from python_playwright import home_contract
 from python_playwright.tests import test_home_requirements as ui_requirements
 
 KNOWN_LAZY_HERO_PLATFORMS = ui_requirements.KNOWN_LAZY_HERO_PLATFORMS
@@ -108,6 +109,59 @@ class KnownLazyHeroTests(unittest.TestCase):
 
         self.assertIn("2026-09-15", preceding)
         self.assertIn("LCP", preceding)
+
+
+class RetiredCategoryInSeoCopyTests(unittest.TestCase):
+    """品类下线后，导航基准要删干净，SEO 文案债要留着被盯住。
+
+    背景（2026-09-22）：Crystal Bracelets 下线，首页已无该品类入口，但
+    title / description / og / twitter 文案仍在售卖它。两件事必须分开处理：
+
+    - 导航基准删断言：需求取消就不该再有人为它放宽条件；
+    - SEO 期望值保持与线上一致：擅自改成"正确文案"会让断言变红在我们自己
+      改期望值上；擅自删掉该词，则线上文案再没有任何用例覆盖。
+    """
+
+    def test_retired_category_left_navigation_baseline(self) -> None:
+        """已下线品类不得再出现在导航或品类链接基准里。"""
+        for retired in home_contract.KNOWN_RETIRED_CATEGORY_IN_SEO_COPY:
+            self.assertNotIn(
+                retired,
+                home_contract.EXPECTED_HEADER_CATEGORY_LINKS,
+                f"{retired} 已下线，应从品类链接基准中删除而不是保留后放宽",
+            )
+            self.assertNotIn(
+                retired,
+                home_contract.EXPECTED_NAVIGATION_LINKS,
+                f"{retired} 已下线，不应留在一级导航基准里",
+            )
+
+    def test_seo_copy_still_covered_by_assertions(self) -> None:
+        """文案债必须仍被 title/description 断言覆盖，不能悄悄删词。"""
+        for retired in home_contract.KNOWN_RETIRED_CATEGORY_IN_SEO_COPY:
+            self.assertIn(
+                retired,
+                home_contract.EXPECTED_TITLE,
+                f"{retired} 仍在线上 title 中；期望值删掉它就等于没人再盯这条文案",
+            )
+            self.assertIn(
+                retired.lower(),
+                home_contract.EXPECTED_DESCRIPTION.lower(),
+                f"{retired} 仍在线上 description 中，期望值不应擅自去掉",
+            )
+
+    def test_debt_is_documented_with_followup(self) -> None:
+        """常量旁要写清发现时间与处置方式，避免变成永久静默。"""
+        text = (
+            Path(__file__).resolve().parents[1]
+            / "python_playwright"
+            / "home_contract.py"
+        ).read_text(encoding="utf-8")
+        index = text.index("KNOWN_RETIRED_CATEGORY_IN_SEO_COPY")
+        preceding = text[max(0, index - 900) : index]
+
+        self.assertIn("2026-09-22", preceding)
+        self.assertIn("SEO", preceding)
 
 
 if __name__ == "__main__":

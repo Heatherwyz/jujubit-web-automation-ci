@@ -52,7 +52,19 @@ def strip_comments_and_docstrings(source: str) -> str:
 
 class CaseMetadataTests(unittest.TestCase):
     def test_cases_were_defined(self) -> None:
-        self.assertGreaterEqual(len(MEMBERSHIP_CASES), 40)
+        """元数据条数下限：防止有人误删整段而不是单条。
+
+        2026-09-23 从 43 降到 35，分两批：
+
+        - 缺账号状态（5 条）：MEM-06/07/18/21/36，需要 Pro / 已退订 /
+          已取消续费 / Premium 用满额度等无法构造的账号；
+        - 无法证伪（4 条）：MEM-14/15/39 要真实的 Airwallex 支付失败，
+          MEM-42 断言"某事件不出现"——没抓到既可能是真没报，也可能是路径没走到。
+
+        同期新增 MEM-41B（曝光只上报一次），净变化 43 - 9 + 1 = 35。
+        下限跟着实际条数走，但不允许再往下掉——否则大段删除不会被发现。
+        """
+        self.assertGreaterEqual(len(MEMBERSHIP_CASES), 35)
 
     def test_case_ids_are_unique(self) -> None:
         ids = [case.case_id for case in MEMBERSHIP_CASES]
