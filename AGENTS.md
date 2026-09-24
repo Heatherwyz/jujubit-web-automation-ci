@@ -99,14 +99,18 @@ gh secret set PLAYWRIGHT_STORAGE_STATE_JSON < artifacts/auth/storage-state.json
 | 入口 | 看什么 | 怎么到 |
 | --- | --- | --- |
 | 飞书卡片 | 结论、有效覆盖、**失败用例名与原因** | 群消息 |
-| **Job Summary** | 完整渲染报告：失败表、未完成表+处置建议、模块结果 | 卡片「查看运行摘要」按钮 → Actions 运行页 |
-| HTML 报告 | pytest-html 原始报告（含截图录像链接） | 卡片「下载 HTML 报告」，需下载后本地打开 |
+| **报告站点** | pytest-html 完整报告，含失败截图与录像，可直接点开 | https://heatherwyz.github.io/jujubit-web-automation-ci/ |
+| Job Summary | 失败表、未完成表+处置建议、模块结果 | 卡片「查看运行摘要」按钮 → Actions 运行页 |
 
-**Job Summary 是主要阅读入口。** GitHub 对仓库内 `.html` 强制
-`text/plain` + `nosniff`，浏览器只显示源码不渲染；私有仓库又不能用 Pages
-（需付费套餐，且 Pages 内容公网可访问，而报告含站点地址与失败详情）。
-所以结论渲染在 Job Summary，HTML 报告作为存档托管在 `test-reports` 分支
-（每套件保留 30 份，索引为该分支的 `index.html`）。
+**报告链接必须走 GitHub Pages。** GitHub 对仓库内 `.html` 强制
+`text/plain` + `nosniff`，`raw.githubusercontent.com` 也一样——实测
+`contentType=text/plain`、整页被包进一个 `<pre>`，浏览器只显示源码，
+看起来就像报告页打不开。仓库转为公开后 Pages 可免费启用，源为
+`test-reports` 分支根目录，每套件保留 30 份、索引是 `index.html`。
+
+失败截图与录像和 HTML 一起发布到该分支，所以报告里的相对链接能直接点开。
+注意目录名按 conftest 实际生成的来：`failure-videos` 与 `screenshots`
+（不是 `failure-screenshots`），写错会静默跳过、链接照样 404。
 
 生成逻辑在 `scripts/write_job_summary.py`，与终端、飞书卡片共用同一份解析，
 三处口径一致。

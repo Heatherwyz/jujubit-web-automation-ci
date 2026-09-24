@@ -254,6 +254,12 @@ jobs:
           CART_RUN_DIR: ${{ steps.cart_report.outputs.run_dir }}
           CART_RUN_ID: ${{ steps.cart_report.outputs.run_id }}
           KEEP: "30"
+          # 报告链接必须走 GitHub Pages，不能用 raw.githubusercontent.com：
+          # GitHub 对仓库内 .html 强制 text/plain + nosniff，raw 链接只会显示
+          # 源码（实测 contentType=text/plain、整页包在一个 <pre> 里），
+          # 看起来就像报告页打不开（2026-09-24 实测）。
+          # Pages 已在本库启用，源为 test-reports 分支根目录。
+          PAGES_BASE: https://heatherwyz.github.io/jujubit-web-automation-ci
         run: |
           set -euo pipefail
           branch_dir=.report-branch
@@ -349,7 +355,7 @@ jobs:
                 f=$(find "$branch_dir/$s/$r" -maxdepth 1 -name '*.html' -printf '%f\n' \
                   | sort | head -1)
                 [[ -z "$f" ]] && continue
-                echo "<li><a href='https://raw.githubusercontent.com/${{ github.repository }}/test-reports/${s}/${r}/${f}'>${r}</a></li>"
+                echo "<li><a href='${PAGES_BASE}/${s}/${r}/${f}'>${r}</a></li>"
               done
               echo "</ul>"
             done
@@ -364,8 +370,7 @@ jobs:
             git -C "$branch_dir" push origin test-reports
           fi
 
-          raw_base="https://raw.githubusercontent.com/${{ github.repository }}/test-reports"
-          echo "index_url=$raw_base/index.html" >> "$GITHUB_OUTPUT"
+          echo "index_url=${PAGES_BASE}/index.html" >> "$GITHUB_OUTPUT"
           echo "报告索引：$raw_base/index.html"
 
       # ---- 最终退出码 ----
