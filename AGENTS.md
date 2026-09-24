@@ -71,6 +71,27 @@ gh secret set PLAYWRIGHT_STORAGE_STATE_JSON < artifacts/auth/storage-state.json
   指定 `wait_until="domcontentloaded"`，默认等 `load` 会 30 秒超时。
 - 默认回归（`run_all.py` 不带参数）**不含**会员层，需显式 `--membership`
   或 `--membership-only`。
+
+### 测试环境开关
+
+主题里的 `isTest()` 认 `localStorage._shop_mode === 'test'`，打开后前端走
+测试环境分支（实验开关改走 `overrideExperiment`、部分入口判定不同）。
+
+```bash
+.venv/bin/python run_all.py --membership-only --platform pc --shop-mode test
+```
+
+底层是 `--pw-shop-mode`（`live` / `test`），**默认必须是 `live`**：测试链路与
+线上行为不一致，日常回归拿它的结果当验收，通过和失败都不可信。
+`tests/test_shop_mode_switch.py` 守住这条默认值。
+
+实现用 `add_init_script` 而不是 `evaluate` + `reload`：init script 在每个文档
+的站点脚本之前执行，后续跳转（点 Get 跳 Airwallex、切页签换 URL）都带得上；
+手工 reload 只对当前那一跳有效。实站验证过 `live` 全程读到 `None`、
+`test` 在会员页与跳转后都是 `'test'`。
+
+`inject_experiment()` 仍然不设 `_shop_mode`，它只覆盖 Statsig 分组。要测试
+环境就用这个开关，保证一轮里模式统一且在命令行可见。
 - 单跑某一条：`pytest -c pytest-playwright.ini "路径::函数名" --pw-platform pc`
 - UI 层耗时长，用后台执行并轮询，不要让命令超时。
 - **改动 fixture 或分层结构后，必须跑一次"浏览器层 + 契约层混跑"**（71 条 = 首页

@@ -97,6 +97,16 @@ def _parse_args():
         default="all",
         help="执行端：all、pc 或 h5；默认同时执行 PC/H5。",
     )
+    parser.add_argument(
+        "--shop-mode",
+        choices=("live", "test"),
+        default="live",
+        help=(
+            "站点前端模式。live（默认）走线上链路；test 在每个页面加载前设置 "
+            "localStorage._shop_mode='test'，让主题进测试环境分支。"
+            "默认必须是 live——测试链路与线上行为不一致，不能用它做日常验收。"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -148,6 +158,9 @@ def main() -> int:
         # 购物车 API 和关键导航与首页共享节流时钟，避免同一主机出现交错突发请求。
         "--pw-cart-request-interval",
         str(args.cart_request_interval),
+        # live（默认）保持线上链路；test 让主题走测试环境分支。
+        "--pw-shop-mode",
+        args.shop_mode,
         "--pw-artifact-dir",
         str(RUN_DIR),
         "--pw-report-name",

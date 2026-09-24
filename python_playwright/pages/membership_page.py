@@ -31,6 +31,14 @@ class MembershipLoginRequiredError(RuntimeError):
     """
 
 
+class MembershipNotLaunchedError(RuntimeError):
+    """该环境的会员功能尚未上线（付费墙是 Coming Soon），本轮无法验证。
+
+    与业务失败必须分开：卡片在 DOM 里但被全屏遮罩挡死，交互一定失败，
+    可那不是站点坏了，是这个环境还没放开功能。
+    """
+
+
 # --- 确认后的期望值 ---
 
 TIERS = ("Basic", "Pro", "Premium")
@@ -115,6 +123,8 @@ SEL_PAYWALL = ".jjb-membership-paywall"
 SEL_PAYWALL_CARDS = ".jjb-membership-paywall__cards"
 SEL_PAYWALL_TOGGLE = ".jjb-membership-paywall__toggle"
 SEL_PAYWALL_QA = ".jjb-membership-paywall__qa"
+# 测试环境未上线时的全屏遮罩（文案 "Coming Soon…… Go Back"，z-index 20）。
+SEL_PAYWALL_COMING_SOON = ".jjb-membership-paywall__coming-soon"
 SEL_CARD = ".jjb-membership-card"
 SEL_CARD_TITLE = ".jjb-membership-card__title"
 SEL_CARD_PRICE = ".jjb-membership-card__price"
@@ -263,15 +273,66 @@ class MembershipPage:
         """返回三档卡片的 locator（线上实测 class：jjb-membership-card）。"""
         return self.page.locator(SEL_CARD)
 
+    def paywall_coming_soon(self) -> bool:
+        """付费墙是否处于"Coming Soon"未上线状态。
+
+        2026-09-25 实测：测试环境（``_shop_mode=test``）下付费墙容器带
+        ``is-coming-soon``，并盖一层 900px 全屏遮罩
+        ``.jjb-membership-paywall__coming-soon``（文案 "Coming Soon…… Go Back"，
+        z-index 20、pointerEvents auto）。三张卡片虽然在 DOM 里，但全部被
+        遮住点不动，于是所有交互用例都报"弹窗关闭后仍在遮挡页面操作"。
+
+        这是"该环境还没上线会员功能"，属于未完成，不是业务失败。
+        """
+        try:
+            return bool(
+                self.page.evaluate(
+                    """([selOverlay, selPaywall]) => {
+                        const overlay = document.querySelector(selOverlay);
+                        if (overlay && overlay.offsetParent
+                            && overlay.getBoundingClientRect().height > 0) {
+                            return true;
+                        }
+                        const paywall = document.querySelector(selPaywall);
+                        return Boolean(
+                            paywall && paywall.classList.contains('is-coming-soon')
+                        );
+                    }""",
+                    [SEL_PAYWALL_COMING_SOON, SEL_PAYWALL],
+                )
+            )
+        except PlaywrightError:
+            return False
+
     def wait_for_paywall(self, timeout: int = TIMEOUT_BUSINESS) -> None:
-        """等待付费墙卡片区渲染完成。"""
-        self.page.wait_for_selector(SEL_CARD, timeout=timeout)
-        # 三张卡片都出现后再继续，避免读到渲染中间态。
+        """等待付费墙卡片区渲染完成。
+
+        付费墙处于 Coming Soon 时抛 MembershipNotLaunchedError：卡片在 DOM 里
+        但被全屏遮罩挡死，继续跑只会让每条交互用例各耗一次点击超时，再把
+        "环境没上线"误报成"弹窗关不掉"的业务失败（2026-09-25 实测 22 条）。
+        """
+        # Coming Soon 与卡片可见必须一起轮询，不能先查一次再等：
+        # is-coming-soon 是 JS 后加的，只在开头查一次会漏（实测同一轮里
+        # MEM-01 命中、MEM-09 漏判，然后耗满 30 秒 wait_for_selector）。
+        # 反过来先等卡片可见也不行——遮罩让卡片永远不可见，必然超时。
         deadline = time.monotonic() + timeout / 1000
         while time.monotonic() < deadline:
+            if self.paywall_coming_soon():
+                raise MembershipNotLaunchedError(
+                    "付费墙处于 Coming Soon：该环境尚未上线会员功能，"
+                    "卡片被全屏遮罩挡住，无法验证任何交互。"
+                )
             if self.paywall_cards().count() >= 3:
                 return
             self.page.wait_for_timeout(300)
+        # 超时前再判一次：遮罩可能在最后一刻才挂上。
+        if self.paywall_coming_soon():
+            raise MembershipNotLaunchedError(
+                "付费墙处于 Coming Soon：该环境尚未上线会员功能，"
+                "卡片被全屏遮罩挡住，无法验证任何交互。"
+            )
+        # 保留原行为：卡片始终没齐时按可见性超时报错，信息比"数量不足"更具体。
+        self.page.wait_for_selector(SEL_CARD, timeout=3_000)
 
     def switch_cycle(self, cycle: str) -> None:
         """切换 Monthly / Yearly。线上是 .jjb-membership-paywall__toggle 内的按钮。

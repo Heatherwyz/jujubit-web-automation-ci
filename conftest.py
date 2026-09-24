@@ -76,6 +76,16 @@ def pytest_addoption(parser):
         help="Playwright 登录状态文件路径；测试 fixture 会在文件存在时复用。",
     )
     parser.addoption(
+        "--pw-shop-mode",
+        choices=("live", "test"),
+        default="live",
+        help=(
+            "站点前端模式。live（默认）保持线上链路；test 会在每个页面加载前设置 "
+            "localStorage._shop_mode='test'，让主题走测试环境分支（isTest() 为真）。"
+            "默认必须是 live：测试链路与线上行为不一致，日常回归不能用它验收。"
+        ),
+    )
+    parser.addoption(
         "--pw-artifact-dir",
         default="",
         help="保存本次报告、截图和失败视频的目录；run_all.py 会自动传入时间戳目录。",

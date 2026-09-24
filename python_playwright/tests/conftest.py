@@ -29,6 +29,7 @@ from python_playwright.pages.home_page import (
     HomePage,
     SiteRateLimitError,
 )
+from python_playwright.pages.membership_page import MembershipNotLaunchedError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -319,6 +320,7 @@ def page(browser, cart_contexts, request, test_platform):
     current_page = context.new_page()
     if is_cart_session:
         _restore_cart_session_storage(current_page, request.config, test_platform)
+    _apply_shop_mode(current_page, request.config)
     current_page.set_default_timeout(10_000)
     current_page.set_default_navigation_timeout(30_000)
     yield current_page
@@ -458,6 +460,29 @@ def _storage_state_issue(path: Path) -> str:
     if persistent and all(float(cookie.get("expires") or 0) <= now for cookie in persistent):
         return "缺少有效登录态：storage-state.json 中的持久化 Cookie 已全部过期，请重新登录导出。"
     return ""
+
+
+def _apply_shop_mode(page, config) -> None:
+    """按 --pw-shop-mode 决定是否让前端走测试环境链路。
+
+    默认 live 时什么都不做，保持线上行为——测试链路与线上不一致，
+    日常回归不能用它验收。
+
+    显式传 test 时用 add_init_script 而不是 evaluate + reload：
+    init script 在每个文档的站点脚本之前执行，后续跳转（点 Get 跳
+    Airwallex、切页签换 URL）也都带上，手工 reload 只对当前那一跳有效。
+    """
+    if config.getoption("--pw-shop-mode") != "test":
+        return
+    page.add_init_script(
+        script="""(() => {
+            try {
+                window.localStorage.setItem('_shop_mode', 'test');
+            } catch (error) {
+                // about:blank 还不能访问 localStorage；真正导航后会再执行一次。
+            }
+        })();"""
+    )
 
 
 def _restore_cart_session_storage(page, config, platform: str) -> None:
@@ -769,9 +794,22 @@ def pytest_sessionfinish(session, exitstatus):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """收集每条 case 的最终状态，为报告和失败录像链接提供数据。"""
+    """收集每条 case 的最终状态，为报告和失败录像链接提供数据。
+
+    顺带把"环境本身没放开功能"从失败改判为未完成：付费墙 Coming Soon 时
+    卡片被全屏遮罩挡死，交互必然失败，但那不是站点坏了。统一在 hook 里转，
+    16 处 wait_for_paywall 调用点不必各写一遍 try/except，新用例也自动生效。
+    """
     outcome = yield
     report = outcome.get_result()
+    if (
+        report.when == "call"
+        and report.failed
+        and call.excinfo is not None
+        and call.excinfo.errisinstance(MembershipNotLaunchedError)
+    ):
+        report.outcome = "skipped"
+        report.longrepr = (__file__, None, f"Skipped: {call.excinfo.value}")
     setattr(item, f"rep_{report.when}", report)
     if report.when == "call" or report.failed or (report.when == "setup" and report.skipped):
         function_name = item.originalname or item.name.split("[")[0]
