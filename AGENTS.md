@@ -92,6 +92,26 @@ gh secret set PLAYWRIGHT_STORAGE_STATE_JSON < artifacts/auth/storage-state.json
 
 `inject_experiment()` 仍然不设 `_shop_mode`，它只覆盖 Statsig 分组。要测试
 环境就用这个开关，保证一轮里模式统一且在命令行可见。
+
+**测试环境的会员功能还没上线（2026-09-25 实测）。** 付费墙整体是
+"Coming Soon…… Go Back"：容器带 `is-coming-soon`，并盖一层 900px 全屏遮罩
+`.jjb-membership-paywall__coming-soon`（z-index 20、`pointerEvents: auto`）。
+三张卡片在 DOM 里但全被挡住点不动。
+
+`wait_for_paywall()` 命中这个状态时抛 `MembershipNotLaunchedError`，由
+`pytest_runtest_makereport` 统一转成未完成——**这是环境没放开功能，不是站点
+坏了**。不做这个转换时，22 条交互用例会集体报"优惠弹窗关闭后仍在遮挡页面
+操作"，每条还各耗一次点击超时。
+
+检测有两个必须遵守的顺序，`tests/test_paywall_coming_soon.py` 钉住：
+
+- 不能先 `wait_for_selector(SEL_CARD)` 再查遮罩：它默认等 visible，遮罩下
+  卡片永远不可见，会耗满 30 秒超时，检测代码根本执行不到。
+- 不能只在开头查一次：`is-coming-soon` 是 JS 后加的，同一轮里会出现
+  MEM-01 命中、MEM-09 漏判。必须与卡片数量在同一循环里轮询。
+
+所以测试环境目前只能验证不依赖付费墙的用例（购物车入口、埋点等），实测
+13 条通过、25 条未完成。等功能上线后覆盖会自然回升。
 - 单跑某一条：`pytest -c pytest-playwright.ini "路径::函数名" --pw-platform pc`
 - UI 层耗时长，用后台执行并轮询，不要让命令超时。
 - **改动 fixture 或分层结构后，必须跑一次"浏览器层 + 契约层混跑"**（71 条 = 首页
