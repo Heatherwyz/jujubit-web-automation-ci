@@ -24,6 +24,7 @@ from python_playwright.home_contract import (  # noqa: E402  保持常量集中�
     EXPECTED_LOGO_ACCESSIBLE_NAME,
     EXPECTED_NAVIGATION_LINKS,
     EXPECTED_TITLE,
+    SEL_SOCIAL_VIDEO,
     check_all as _check_html_contracts,
 )
 # REQ-06 是安全属性验收：所有当前已配置的社交平台都必须独立检查，不能
@@ -660,11 +661,18 @@ def test_homepage_links_are_real_anchors(home, page, test_platform):
 
 
 def test_social_videos_have_inline_playback_attributes(home, page, test_platform):
-    """REQ-08：社交视频满足静音、移动端内联和循环播放属性。"""
+    """REQ-08：社交视频满足静音、移动端内联和循环播放属性。
+
+    只扫 Social 版块，不能用 page.locator("video") 扫全站：首屏 banner 视频
+    （.jjb-banner__media）是 autoplay 展示视频，播完停住才是正常设计，需求
+    里那条写的也是 "Social" 模块。扫全站会把 2 个 banner 视频算进来，报
+    "视频必须循环播放" 的假失败——线上 14 个 Social 视频其实全都带 loop
+    （2026-10-08 查实，CI 连续 8 轮各 2 条就栽在这）。
+    """
     home.close_welcome_popup()
-    videos = page.locator("video")
+    videos = page.locator(SEL_SOCIAL_VIDEO)
     if videos.count() == 0:
-        pytest.skip("当前页面未配置视频")
+        pytest.skip("当前页面未配置社交视频版块")
     for video in videos.all():
         assert video.evaluate("el => el.muted"), "视频必须静音播放"
         assert video.get_attribute("playsinline") is not None, "视频必须支持移动端内联播放"

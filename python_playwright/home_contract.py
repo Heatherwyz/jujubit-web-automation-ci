@@ -59,6 +59,12 @@ EXPECTED_HEADER_CATEGORY_LINKS = {
 # 核心版块文案由主题配置，取稳定标识而非营销长句，避免文案微调即报红。
 EXPECTED_SECTION_MARKERS = ("Pick Your Style", "How It Works")
 
+# Social 版块视频的 class。REQ-08 的 muted/playsinline/loop 只约束这一类：
+# 首屏 banner 视频（jjb-banner__media）是 autoplay 展示视频，播完停住才对。
+# 两层共用同一个常量，避免只改一处导致契约层与浏览器层口径漂移。
+SOCIAL_VIDEO_CLASS = "jjb-social-media__video"
+SEL_SOCIAL_VIDEO = f"video.{SOCIAL_VIDEO_CLASS}"
+
 
 def normalize_text(value: str) -> str:
     """折叠空白并解码实体，供文本包含类断言使用。"""
@@ -339,10 +345,22 @@ def check_social_videos(html: str) -> list[str]:
 
     属性用 HTML 布尔属性语义判断：``muted``、``playsinline``、``loop`` 只要出现
     即生效，值可以是空串、"muted" 或 "true"。
+
+    只认 Social 版块的 video（``jjb-social-media__video``）：需求里那条写的是
+    "Social" 模块，而首屏 banner 视频（``jjb-banner__media``）是 autoplay
+    展示视频，播完停住才对，给它加 loop 反而错。扫全站会把 2 个 banner 视频
+    算进来报假失败——线上 14 个 Social 视频其实全都带 loop（2026-10-08 查实）。
     """
-    videos = re.findall(r"<video\b[^>]*>", html, re.I)
+    videos = [
+        tag
+        for tag in re.findall(r"<video\b[^>]*>", html, re.I)
+        if SOCIAL_VIDEO_CLASS in tag
+    ]
     if not videos:
-        return ["服务端 HTML 中没有 video 元素（社交视频版块可能被删除）"]
+        return [
+            "服务端 HTML 中没有社交视频版块的 video 元素"
+            f"（class 含 {SOCIAL_VIDEO_CLASS}，版块可能被删除）"
+        ]
     problems: list[str] = []
     for index, tag in enumerate(videos, start=1):
         lowered = tag.lower()

@@ -236,18 +236,47 @@ class SocialVideoTests(unittest.TestCase):
         problems = check_social_videos(compliant_html(videos=""))
 
         self.assertEqual(len(problems), 1)
-        self.assertIn("没有 video 元素", problems[0])
+        self.assertIn("没有社交视频版块", problems[0])
+
+    def test_banner_videos_are_not_checked(self) -> None:
+        """首屏 banner 视频不受这条需求约束。
+
+        它是 autoplay 展示视频，播完停住才对，给它加 loop 反而错；需求里
+        那条写的也是 Social 模块。扫全站会把 banner 算进来报假失败——CI
+        连续 8 轮各 2 条就栽在这（2026-10-08 查实，线上 14 个 Social 视频
+        其实全都带 loop）。
+        """
+        html = compliant_html(
+            videos=(
+                '<video playsinline="true" autoplay muted="muted" '
+                'class="jjb-banner__media"></video>'
+            )
+        )
+
+        problems = check_social_videos(html)
+
+        # banner 没有 loop，但它不该被检查；此时等价于"Social 版块缺失"。
+        self.assertEqual(len(problems), 1)
+        self.assertIn("没有社交视频版块", problems[0])
 
     def test_valueless_boolean_attributes_are_accepted(self) -> None:
         """HTML 布尔属性只要出现即生效，不要求带值。"""
-        html = compliant_html(videos="<video muted playsinline loop></video>")
+        html = compliant_html(
+            videos=(
+                "<video muted playsinline loop "
+                'class="jjb-social-media__video"></video>'
+            )
+        )
 
         self.assertEqual(check_social_videos(html), [])
 
     def test_missing_muted_is_reported(self) -> None:
         """自动播放的视频必须静音，否则移动端会被浏览器阻止播放。"""
         html = compliant_html(
-            videos='<video playsinline="true" loop="loop"></video>'
+            videos=(
+                '<video playsinline="true" loop="loop" '
+                'class="jjb-social-media__video"></video>'
+            )
         )
 
         problems = check_social_videos(html)
@@ -255,7 +284,11 @@ class SocialVideoTests(unittest.TestCase):
         self.assertTrue(any("muted" in item for item in problems))
 
     def test_missing_playsinline_and_loop_are_both_reported(self) -> None:
-        html = compliant_html(videos='<video muted="muted"></video>')
+        html = compliant_html(
+            videos=(
+                '<video muted="muted" class="jjb-social-media__video"></video>'
+            )
+        )
 
         problems = check_social_videos(html)
 
@@ -266,9 +299,11 @@ class SocialVideoTests(unittest.TestCase):
         """一个视频有问题不能掩盖其他视频的同类问题。"""
         html = compliant_html(
             videos=(
-                '<video muted playsinline loop></video>'
-                "<video></video>"
-                '<video muted playsinline></video>'
+                '<video muted playsinline loop '
+                'class="jjb-social-media__video"></video>'
+                '<video class="jjb-social-media__video"></video>'
+                '<video muted playsinline '
+                'class="jjb-social-media__video"></video>'
             )
         )
 
