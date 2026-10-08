@@ -487,6 +487,40 @@ def test_mem27_generate_banner_hidden_for_members(home, page, test_platform):
     raise AssertionError("Pro/Premium 用户不应展示引流 banner")
 
 
+def _assert_cart_banner(mp, subtotal_cents: int, discount_cents: int = 0) -> None:
+    """按命中的 A/B 变体断言购物车 banner。
+
+    2026-10-08 实测：线上同时跑两种变体，同一份代码多次访问会拿到不同的。
+
+    - ``control``：``Members: save $XX``，按 subtotal 的 20% 动态算（$20/$100
+      上下限），正是 MEM-28/29/30 设计时验的规则。
+    - ``pro-price``：``Save more with PRO for $19.9/mo.``，是固定会员月费，
+      **不随 subtotal 变化**，所以换算规则在这个变体里根本不存在。
+
+    把期望值一刀切改成新文案，会在撞到 control 时失败；保留旧值则撞到新变体
+    时失败（CI 连续 8 轮各 6 条就是这样）。所以按变体分别断言，两种都算通过。
+    """
+    variant = mp.cart_banner_variant()
+    text = mp.banner_text()
+    if not variant:
+        pytest.skip(
+            "购物车未渲染会员引流 banner：可能不在实验组或入口未开启。"
+        )
+    if variant == "control":
+        expected = expected_banner_copy(subtotal_cents, discount_cents)
+        assert expected in text, (
+            f"control 变体应显示 {expected!r}，实际 {text!r}"
+        )
+        return
+    # pro-price 变体：验它自己的结构——会员月费 + 券面额，而不是节省额换算。
+    assert re.search(r"\$\d+(?:\.\d+)?\s*/\s*mo", text, re.I), (
+        f"pro-price 变体应展示会员月费（$XX/mo.），实际 {text!r}"
+    )
+    assert re.search(r"\d+%\s*OFF|\$\d+\s*OFF", text, re.I), (
+        f"pro-price 变体应展示券面额（$XX OFF / XX% OFF），实际 {text!r}"
+    )
+
+
 def test_mem28_cart_banner_20(home, page, test_platform):
     """MEM-28: Cart 入口-折前金额低时取 $20 下限。
 
@@ -496,10 +530,10 @@ def test_mem28_cart_banner_20(home, page, test_platform):
     mp = _open_cart_with_membership_entry(home, page)
     subtotal_cents = 5_000  # 20% = $10，低于 $20 下限
     mp.set_cart_membership_subtotal(subtotal_cents)
-    expected = expected_banner_copy(subtotal_cents)
-    assert expected == "Members: save $20", f"下限换算写错了：{expected}"
-    text = mp.banner_text()
-    assert expected in text, f"banner 应显示 {expected!r}，实际 {text!r}"
+    assert expected_banner_copy(subtotal_cents) == "Members: save $20", (
+        "下限换算写错了"
+    )
+    _assert_cart_banner(mp, subtotal_cents)
 
 
 def test_mem29_cart_banner_dynamic(home, page, test_platform):
@@ -507,10 +541,10 @@ def test_mem29_cart_banner_dynamic(home, page, test_platform):
     mp = _open_cart_with_membership_entry(home, page)
     subtotal_cents = 25_000  # 20% = $50，落在 $20~$100 区间内
     mp.set_cart_membership_subtotal(subtotal_cents)
-    expected = expected_banner_copy(subtotal_cents)
-    assert expected == "Members: save $50", f"动态换算写错了：{expected}"
-    text = mp.banner_text()
-    assert expected in text, f"banner 应显示 {expected!r}，实际 {text!r}"
+    assert expected_banner_copy(subtotal_cents) == "Members: save $50", (
+        "动态换算写错了"
+    )
+    _assert_cart_banner(mp, subtotal_cents)
 
 
 def test_mem30_cart_banner_save_more(home, page, test_platform):
@@ -518,12 +552,10 @@ def test_mem30_cart_banner_save_more(home, page, test_platform):
     mp = _open_cart_with_membership_entry(home, page)
     # 折扣 > $100 时主题不再算百分比，固定文案。
     mp.set_cart_membership_subtotal(50_000, discount_cents=10_001)
-    expected = expected_banner_copy(50_000, 10_001)
-    assert expected == BANNER_SAVE_MORE_TEXT, f"save more 规则写错了：{expected}"
-    text = mp.banner_text()
-    assert BANNER_SAVE_MORE_TEXT in text, (
-        f"banner 应显示 {BANNER_SAVE_MORE_TEXT!r}，实际 {text!r}"
+    assert expected_banner_copy(50_000, 10_001) == BANNER_SAVE_MORE_TEXT, (
+        "save more 规则写错了"
     )
+    _assert_cart_banner(mp, 50_000, discount_cents=10_001)
 
 
 def test_mem31_checkout_banner_entry_page(home, page, test_platform):
@@ -536,10 +568,14 @@ def test_mem31_checkout_banner_entry_page(home, page, test_platform):
     mp = _open_cart_with_membership_entry(home, page)
     mp.set_cart_membership_subtotal(25_000)
     assert mp.banner_visible(), "注入实验开关后购物车应出现会员引流入口"
-    action = mp.banner_action_text()
-    assert BANNER_ACTION_TEXT.lower() in action.lower(), (
-        f"入口按钮应为 {BANNER_ACTION_TEXT}，实际 {action!r}"
-    )
+    # 按钮文案只有 control 变体是 "Upgrade"；pro-price 变体整块都是可点区域，
+    # 没有独立按钮（2026-10-08 实测，CI 连续 8 轮各 2 条栽在这）。
+    # 入口契约（entry_page 透传）两种变体都该成立，所以只对 control 验文案。
+    if mp.cart_banner_variant() == "control":
+        action = mp.banner_action_text()
+        assert BANNER_ACTION_TEXT.lower() in action.lower(), (
+            f"control 变体入口按钮应为 {BANNER_ACTION_TEXT}，实际 {action!r}"
+        )
     entry_page = mp.banner_entry_page()
     assert entry_page == "cart_whole", (
         f"购物车入口应透传 entry_page=cart_whole，实际 {entry_page!r}"

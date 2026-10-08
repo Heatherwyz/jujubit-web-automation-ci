@@ -905,6 +905,45 @@ class MembershipPage:
         """会员引流 banner 是否可见。"""
         return bool(self.banner_text())
 
+    def cart_banner_variant(self) -> str:
+        """购物车 banner 命中了哪个 A/B 变体。
+
+        2026-10-08 实测：线上同时跑两种变体，同一份代码多次访问会拿到不同的：
+
+        - ``control``：``.cc-membership-entry--control``，文案
+          ``Members: save $XX`` 按 subtotal 的 20% 动态算（有 $20/$100 上下限）。
+        - ``pro-price``：没有 ``--control`` 后缀，文案
+          ``Save more with PRO for $19.9/mo.`` 是固定会员月费，**不随 subtotal
+          变化**，另有 ``__price`` / ``__offers`` 子节点展示券面额。
+
+        所以 MEM-28/29/30 那套"20% 换算"规则只对 control 成立。把期望值直接
+        改成新文案会在撞到 control 时失败，反之亦然——必须按变体分别断言。
+
+        返回 ``""`` 表示 banner 未渲染（不在实验组或入口未开）。
+
+        判定口径必须和 ``banner_text()`` 一致：它读 ``inner_text()``，只要有
+        文案就算渲染。这里原来用 ``offsetParent`` 判可见性，而 pro-price 变体
+        实测 ``offsetParent=False``、``rect.height=0``（外层容器折叠），于是
+        同一轮里 ``banner_text()`` 有值、变体却返回空串，把"已渲染"误判成
+        "不在实验组"而全部 skip（2026-10-08 自测踩到）。
+        """
+        return str(
+            self.page.evaluate(
+                """(sel) => {
+                    const root = document.querySelector(sel);
+                    if (!root) return '';
+                    const text = (root.innerText || '').trim();
+                    if (!text) return '';
+                    if (root.classList.contains('cc-membership-entry--control')) {
+                        return 'control';
+                    }
+                    return 'pro-price';
+                }""",
+                SEL_CART_MEMBERSHIP_ENTRY,
+            )
+            or ""
+        )
+
     def banner_action_text(self) -> str:
         """banner 上的行动按钮文案（线上为 Upgrade）。"""
         action = self.page.locator(SEL_CART_MEMBERSHIP_ENTRY_ACTION)
