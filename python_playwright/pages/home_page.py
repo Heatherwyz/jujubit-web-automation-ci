@@ -56,11 +56,18 @@ class HomePage:
         # 线上主题曾同时出现新旧两种优惠弹窗 class，统一覆盖，避免遮挡点击。
         # ``:visible`` 不能单独作为判断：真正拦截点击的可能是全屏 overlay，
         # 因此关闭逻辑还会结合 elementFromPoint 检查当前顶层命中元素。
+        #
+        # 必须带上 .jjb-membership-offer：会员 offer 弹窗后来才上线，首页层
+        # 原来只认 newsletter-popup-*，于是 CI 上连续 8 轮购物车 21 条全败，
+        # 报错都是"点击 Header Create 失败：遮挡元素=div.jjb-membership-offer"
+        # （2026-10-08 查实）。它在本机常不弹、CI 必弹，所以只能靠选择器兜住。
         self.popup_root = page.locator(
-            ".newsletter-popup-v2, .newsletter-popup--original"
+            ".newsletter-popup-v2, .newsletter-popup--original,"
+            " .jjb-membership-offer"
         )
         self.welcome_popup = page.locator(
-            ".newsletter-popup-v2:visible, .newsletter-popup--original:visible"
+            ".newsletter-popup-v2:visible, .newsletter-popup--original:visible,"
+            " .jjb-membership-offer:visible"
         )
 
     def open(self, path: str = "") -> None:
@@ -235,6 +242,11 @@ class HomePage:
                         '.newsletter-popup--original button[aria-label*="Close"]',
                         '.newsletter-popup-v2 .modal__close',
                         '.newsletter-popup--original .modal__close',
+                        // 会员 offer 弹窗：后上线的第三种遮罩，CI 上会挡住
+                        // 首页 Header Create，必须一起算进拦截判定。
+                        '.jjb-membership-offer',
+                        '.jjb-membership-offer__content',
+                        '.jjb-membership-offer__close',
                     ].join(','))];
 
                     const isRendered = element => {
@@ -291,6 +303,9 @@ class HomePage:
             ".newsletter-popup-v2__close:visible, "
             ".newsletter-popup__close:visible, "
             ".modal__close:visible, "
+            # 会员 offer 弹窗的关闭按钮不带 aria-label，也不叫 modal__close，
+            # 漏掉它就只能检测到遮挡、关不掉（2026-10-08 查实）。
+            ".jjb-membership-offer__close:visible, "
             "[data-popup-close]:visible"
         )
 
