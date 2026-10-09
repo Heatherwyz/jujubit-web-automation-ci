@@ -580,6 +580,12 @@ def test_mem31_checkout_banner_entry_page(home, page, test_platform):
     assert entry_page == "cart_whole", (
         f"购物车入口应透传 entry_page=cart_whole，实际 {entry_page!r}"
     )
+    # 0929 需求：banner 可见时，点击应打开带 cart_whole 的付费墙。
+    # 空全屏购物车中的新版 banner 尺寸可能为 0，此时保留上面的文案和参数断言。
+    if mp.open_cart_banner_paywall():
+        assert "entry_page=cart_whole" in page.url, (
+            f"点击购物车 banner 后应打开带 cart_whole 的付费墙，实际 {page.url}"
+        )
 
 
 def test_mem32_entry_page_roundtrip(home, page, test_platform):

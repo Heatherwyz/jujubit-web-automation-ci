@@ -20,7 +20,9 @@ REPORT_PATH = RUN_DIR / REPORT_NAME
 
 # 默认回归的 marker 表达式：排除购物车登录态用例（有外部副作用）与会员模块
 # （需显式 --membership 才跑）。写成常量便于单测直接断言口径。
-DEFAULT_MARKER_EXPRESSION = "not cart_session and not membership"
+DEFAULT_MARKER_EXPRESSION = (
+    "not cart_session and not membership and not inspiration and not halloween"
+)
 
 
 def _parse_args():
@@ -71,6 +73,21 @@ def _parse_args():
             "执行会员模块用例（付费墙、Membership 管理页、引流入口、弹窗与埋点）。"
             "支付相关只走到拉起 Airwallex 表单，不填卡不付款、不产生真实扣款。"
         ),
+    )
+    parser.add_argument(
+        "--inspiration",
+        action="store_true",
+        help="追加社区 Inspiration 用例。功能未放开时记为未完成，不记业务失败。",
+    )
+    parser.add_argument(
+        "--inspiration-only",
+        action="store_true",
+        help="只执行社区 Inspiration 用例，不执行首页、购物车和会员。",
+    )
+    parser.add_argument(
+        "--halloween-only",
+        action="store_true",
+        help="只执行万圣节专题页用例，不创建生成任务。",
     )
     parser.add_argument(
         "--membership-only",
@@ -131,6 +148,17 @@ def main() -> int:
         )
     if args.membership and args.membership_only:
         raise SystemExit("--membership 与 --membership-only 只能选择一个。")
+    if args.inspiration and args.inspiration_only:
+        raise SystemExit("--inspiration 与 --inspiration-only 只能选择一个。")
+    if args.inspiration_only and (
+        args.cart_suite or args.membership or args.membership_only or any(selected_cart_modes)
+    ):
+        raise SystemExit("--inspiration-only 不能与会员或购物车参数同时使用。")
+    if args.halloween_only and (
+        args.cart_suite or args.membership or args.membership_only
+        or args.inspiration or args.inspiration_only or any(selected_cart_modes)
+    ):
+        raise SystemExit("--halloween-only 不能与其他模块参数同时使用。")
     if args.membership_only and (args.cart_suite or any(selected_cart_modes)):
         raise SystemExit("--membership-only 不能与任何购物车参数同时使用。")
     if args.cart_request_interval < 0:
@@ -209,6 +237,12 @@ def main() -> int:
     elif args.include_cart:
         # 完整回归保留原有 15 条逻辑用例；独立 CI Smoke 不重复计入 30 条记录。
         command.extend(["--pw-cart-suite", "full", "-m", "not cart_smoke"])
+    elif args.halloween_only:
+        command.extend(["-m", "halloween"])
+    elif args.inspiration_only:
+        command.extend(["-m", "inspiration"])
+    elif args.inspiration:
+        command.extend(["-m", "not cart_session and not membership"])
     elif args.membership:
         # 默认回归追加会员模块：排除购物车登录态，保留首页与会员。
         command.extend(["-m", "not cart_session"])

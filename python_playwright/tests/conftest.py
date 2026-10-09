@@ -29,6 +29,7 @@ from python_playwright.pages.home_page import (
     HomePage,
     SiteRateLimitError,
 )
+from python_playwright.pages.inspiration_page import InspirationNotLaunchedError
 from python_playwright.pages.membership_page import MembershipNotLaunchedError
 
 
@@ -69,7 +70,21 @@ CASE_TITLES = {
     "test_homepage_json_ld_is_valid_and_matches_faq": "REQ-13: JSON-LD 可解析且 FAQ 与页面同源",
     "test_homepage_image_alt_policy": "REQ-14: 首页图片 alt 符合 SEO 与合规要求",
     "test_core_content_is_present_in_server_html": "REQ-15: 原始 HTML 包含核心 SEO、导航与区块内容",
-    "test_home_server_html_contract": "HTML 契约",
+    "test_inspiration_navigation_entry": "INS-01: 当前端导航进入 Inspiration",
+    "test_inspiration_tabs_come_from_server": "INS-02: Inspiration 分区来自接口且排除 campaign",
+    "test_inspiration_feed_pagination_appends": "INS-03: Inspiration Feed 分页只追加不覆盖",
+    "test_inspiration_card_click_opens_detail_not_sku": "INS-04: 点击作品封面进入详情",
+    "test_inspiration_cart_icon_does_not_open_detail": "INS-05: 作品卡购物车图标进入 SKU",
+    "test_inspiration_price_format_matches_card_state": "INS-06: 作品卡价格与可售状态一致",
+    "test_reviews_page_server_html": "REV-01: 静态评论页标题、评论与评分存在",
+    "test_contact_page_exposes_anonymous_uid": "UID-01: Contact 页面展示匿名用户标识",
+    "test_halloween_banner_and_creator_anchor": "HAL-01: 万圣节 Banner 锚到页内创作区",
+    "test_halloween_style_cards_have_unique_destinations": "HAL-02: 六张风格卡跳转地址唯一",
+    "test_halloween_products_show_discount_and_two_columns_on_mobile": "HAL-03: 万圣节商品展示折扣价",
+    "test_edit_entry_visible_when_experiment_enabled": "EDIT-01: 实验开启后 Gallery 展示 Edit 入口",
+    "test_creator_defaults_to_free_style": "STYLE-01: 创作页默认展示 Free Style",
+    "test_creator_object_count_keeps_selected_style": "STYLE-02: 切换人数保留已选模板",
+    "test_creator_style_selection_is_limited_to_three": "STYLE-03: 模板最多选择三个",
     "test_ci_smoke_generate_add_and_checkout": (
         "CART-SMOKE: 单一登录上下文完成生成、加购、全屏购物车与 Checkout"
     ),
@@ -806,7 +821,10 @@ def pytest_runtest_makereport(item, call):
         report.when == "call"
         and report.failed
         and call.excinfo is not None
-        and call.excinfo.errisinstance(MembershipNotLaunchedError)
+        and (
+            call.excinfo.errisinstance(MembershipNotLaunchedError)
+            or call.excinfo.errisinstance(InspirationNotLaunchedError)
+        )
     ):
         report.outcome = "skipped"
         report.longrepr = (__file__, None, f"Skipped: {call.excinfo.value}")

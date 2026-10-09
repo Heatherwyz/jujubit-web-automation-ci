@@ -951,6 +951,24 @@ class MembershipPage:
             return action.first.inner_text().strip()
         return ""
 
+    def open_cart_banner_paywall(self) -> bool:
+        """点击当前可见的购物车 banner，进入会员付费墙。
+
+        新版 banner 在空的全屏购物车里会渲染但尺寸为 0，需求图对应的是半屏
+        或有商品的全屏购物车。这里只点击真正可见的节点；不可见时返回 False，
+        由调用方保留文案和 entry_page 的断言，不把空购物车误判成点击失败。
+        """
+        self.home.close_welcome_popup()
+        target = self.page.locator(
+            f"{SEL_CART_MEMBERSHIP_ENTRY}:visible,"
+            f" {SEL_CART_MEMBERSHIP_ENTRY_ACTION}:visible"
+        ).first
+        if target.count() == 0:
+            return False
+        target.click()
+        self.page.wait_for_url(re.compile(r"entry_page=cart_whole"), timeout=15_000)
+        return True
+
     def banner_entry_page(self) -> str:
         """banner 按钮回跳付费墙时透传的 entry_page。"""
         action = self.page.locator(SEL_CART_MEMBERSHIP_ENTRY_ACTION)
