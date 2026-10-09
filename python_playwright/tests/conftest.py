@@ -82,9 +82,7 @@ CASE_TITLES = {
     "test_halloween_style_cards_have_unique_destinations": "HAL-02: 六张风格卡跳转地址唯一",
     "test_halloween_products_show_discount_and_two_columns_on_mobile": "HAL-03: 万圣节商品展示折扣价",
     "test_edit_entry_visible_when_experiment_enabled": "EDIT-01: 实验开启后 Gallery 展示 Edit 入口",
-    "test_creator_defaults_to_free_style": "STYLE-01: 创作页默认展示 Free Style",
-    "test_creator_object_count_keeps_selected_style": "STYLE-02: 切换人数保留已选模板",
-    "test_creator_style_selection_is_limited_to_three": "STYLE-03: 模板最多选择三个",
+    "test_home_server_html_contract": "HTML 契约",
     "test_ci_smoke_generate_add_and_checkout": (
         "CART-SMOKE: 单一登录上下文完成生成、加购、全屏购物车与 Checkout"
     ),

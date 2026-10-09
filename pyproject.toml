@@ -10,4 +10,8 @@ markers = [
     "html_contract: 服务端 HTML 契约层；不起浏览器、不分端，结论确定应保持全绿",
     "membership_session: 会员用例需要登录态；支付相关仅走到拉起表单，不产生真实扣款",
     "membership: 会员模块全部用例（付费墙、管理页、引流入口、弹窗、埋点）",
+    "inspiration: 社区 Inspiration 用例；功能未放开时记未完成，需显式 --inspiration 才执行",
+    "halloween: 万圣节专题页用例；只读页面，不创建生成任务",
+    "edit_generation: Edit 生成入口用例；只验证入口，不点击 Edit 或创建任务",
+    "contact: Contact 页面匿名标识用例；不记录具体标识",
 ]

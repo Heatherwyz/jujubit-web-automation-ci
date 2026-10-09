@@ -579,50 +579,72 @@ def card_template(
     executed_pass_rate = (passed / executed * 100) if executed else 0.0
     executed_pass_rate = min(executed_pass_rate, 100.0)
     coverage = (executed / total * 100) if total else 0.0
-    fields = [
+    duration_text = _format_duration(summary.get("duration_seconds", 0))
+    # 三块指标卡横排：通过率、业务失败、跳过与耗时。每块都给大号主数值和一行
+    # 说明，避免把五个同等字号的字段堆在一起，接收方看不出重点。
+    metric_columns = [
         {
-            "is_short": True,
-            "text": {
-                "tag": "lark_md",
-                "content": (
-                    f"**已执行通过率**\n{executed_pass_rate:.1f}%（{passed}/{executed}）"
-                ),
-            },
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "vertical_align": "top",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": (
+                            f"**执行通过率**\n**{executed_pass_rate:.1f}%**\n"
+                            f"{passed}/{executed}　有效覆盖 {coverage:.0f}%"
+                        ),
+                    },
+                }
+            ],
         },
         {
-            "is_short": True,
-            "text": {
-                "tag": "lark_md",
-                "content": (
-                    f"**有效覆盖**\n{coverage:.0f}%（{executed}/{total} 条得出结论）"
-                ),
-            },
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "vertical_align": "top",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": (
+                            f"**业务失败**\n**{business_failures}**\n"
+                            + ("无" if business_failures == 0 else "见下方用例明细")
+                        ),
+                    },
+                }
+            ],
         },
         {
-            "is_short": True,
-            "text": {
-                "tag": "lark_md",
-                "content": f"**业务失败**\n{business_failures}",
-            },
-        },
-        {
-            "is_short": True,
-            "text": {
-                "tag": "lark_md",
-                "content": (
-                    f"**429 未完成 / 其他跳过**\n"
-                    f"{rate_limited} / {ordinary_skipped}"
-                ),
-            },
-        },
-        {
-            "is_short": True,
-            "text": {
-                "tag": "lark_md",
-                "content": f"**耗时**\n{_format_duration(summary.get('duration_seconds', 0))}",
-            },
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "vertical_align": "top",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": (
+                            f"**跳过 / 耗时**\n**{rate_limited + ordinary_skipped}**\n"
+                            f"429 {rate_limited} · 其他 {ordinary_skipped}　{duration_text}"
+                        ),
+                    },
+                }
+            ],
         },
     ]
+    metric_row = {
+        "tag": "column_set",
+        "flex_mode": "bisect",
+        "background_style": "default",
+        "horizontal_spacing": "default",
+        "columns": metric_columns,
+    }
     actions = []
     # HTML 报告直链放在最前且用 primary：它是排查失败时最先要看的东西，
     # 不用再下载 artifact 或翻 Actions 页面。
@@ -659,14 +681,53 @@ def card_template(
     if commit_label != "未知":
         commit_label = commit_label[:7]
     started_label = _format_started_at(started_at or str(summary.get("started_at", "")))
-    execution_info = (
-        f"**分支**　{_display_value(branch)}　　"
-        f"**执行人**　{_display_value(actor)}\n"
-        f"**提交**　`{commit_label}`　　"
-        f"**开始时间**　{started_label}"
-    )
-    if run_id:
-        execution_info += f"\n**运行标识**　{_display_value(run_id)}"
+    # 执行信息分两列：左侧是人和分支，右侧是提交与运行标识，便于横向对照。
+    execution_columns = [
+        {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "vertical_align": "top",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": (
+                            f"**分支**\n{_display_value(branch)}\n"
+                            f"**开始时间**\n{started_label}"
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "vertical_align": "top",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": (
+                            f"**提交**\n`{commit_label}`\n"
+                            f"**运行标识**\n{_display_value(run_id) if run_id else '未知'}"
+                        ),
+                    },
+                }
+            ],
+        },
+    ]
+    execution_row = {
+        "tag": "column_set",
+        "flex_mode": "bisect",
+        "background_style": "default",
+        "horizontal_spacing": "default",
+        "columns": execution_columns,
+    }
+    actor_line = f"**执行人**　{_display_value(actor)}"
     execution_scope = _suite_execution_lines(
         summary, suite, suite_label, planned_cases, actual_cases
     )
@@ -675,14 +736,14 @@ def card_template(
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"**状态：{status}**　　总用例：{total}",
+                "content": f"**状态：{status}**　　总用例：{total}　　{actor_line}",
             },
         },
-        {"tag": "div", "fields": fields},
+        metric_row,
+        {"tag": "hr"},
+        execution_row,
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": execution_scope}},
-        {"tag": "hr"},
-        {"tag": "div", "text": {"tag": "lark_md", "content": execution_info}},
         {"tag": "hr"},
         {
             "tag": "div",
@@ -696,15 +757,15 @@ def card_template(
     # 才知道是哪条。这是排查时第一个要看的信息。
     failure_lines = _failed_case_lines(summary)
     if failure_lines:
-        elements.insert(
-            2,
+        elements.append({"tag": "hr"})
+        elements.append(
             {
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"**失败用例**\n{failure_lines}",
+                    "content": f"**用例明细**\n{failure_lines}",
                 },
-            },
+            }
         )
     if rate_limited:
         elements.append(
@@ -745,6 +806,11 @@ def card_template(
                 "title": {
                     "tag": "plain_text",
                     "content": f"JuJuBit 自动化测试 · {status}",
+                },
+                # 副标题带执行范围和开始时间，接收方不展开正文也知道是哪一轮。
+                "subtitle": {
+                    "tag": "plain_text",
+                    "content": f"{suite_label or '默认回归'} · {started_label}",
                 },
             },
             "elements": elements,

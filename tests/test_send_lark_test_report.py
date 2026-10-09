@@ -110,8 +110,8 @@ class LarkReportTests(unittest.TestCase):
         self.assertEqual(summary["rate_limited_skipped"], 1)
         self.assertEqual(summary["ordinary_skipped"], 1)
         card_text = json.dumps(card_template(summary), ensure_ascii=False)
-        self.assertIn("429 未完成 / 其他跳过", card_text)
-        self.assertIn("1 / 1", card_text)
+        self.assertIn("跳过 / 耗时", card_text)
+        self.assertIn("429 1 · 其他 1", card_text)
         self.assertIn("业务失败", card_text)
 
     def test_legacy_summary_does_not_double_count_rate_limited_skip(self) -> None:
@@ -130,7 +130,7 @@ class LarkReportTests(unittest.TestCase):
         }
 
         card_text = json.dumps(card_template(legacy_summary), ensure_ascii=False)
-        self.assertIn("2 / 0", card_text)
+        self.assertIn("429 2 · 其他 0", card_text)
 
     def test_card_contains_execution_and_module_details(self) -> None:
         summary = {
@@ -182,7 +182,8 @@ class LarkReportTests(unittest.TestCase):
         card_text = json.dumps(card, ensure_ascii=False)
 
         self.assertIn("JuJuBit 自动化测试", card_text)
-        self.assertIn("80.0%（4/5）", card_text)
+        self.assertIn("**80.0%**", card_text)
+        self.assertIn("4/5", card_text)
         self.assertIn("1分22秒", card_text)
         self.assertIn("main", card_text)
         self.assertIn("tester", card_text)
@@ -378,16 +379,17 @@ class BusinessFailureCountTests(unittest.TestCase):
 
         card = card_template(summary, exit_code="0")
         contents = [
-            field["text"]["content"]
+            item["text"]["content"]
             for element in card["card"]["elements"]
-            for field in element.get("fields", [])
+            for column in element.get("columns", [])
+            for item in column.get("elements", [])
         ]
         rendered = "\n".join(contents)
 
-        self.assertIn("已执行通过率", rendered)
-        self.assertIn("100.0%（13/13）", rendered)
-        self.assertIn("有效覆盖", rendered)
-        self.assertIn("43%（13/30 条得出结论）", rendered)
+        self.assertIn("执行通过率", rendered)
+        self.assertIn("100.0%", rendered)
+        self.assertIn("13/13", rendered)
+        self.assertIn("有效覆盖 43%", rendered)
         self.assertEqual(card["card"]["header"]["template"], "orange")
 
 
@@ -472,11 +474,15 @@ class ExecutedPassRateTests(unittest.TestCase):
     """已执行通过率的分母必须是真正得出业务结论的用例数。"""
 
     def _rate(self, card) -> str:
+        """从三列指标卡里取通过率；新版卡片不再使用 fields 布局。"""
         for element in card["card"]["elements"]:
-            for field in element.get("fields", []):
-                content = field["text"]["content"]
-                if "已执行通过率" in content:
-                    return content
+            if element.get("tag") != "column_set":
+                continue
+            for column in element.get("columns", []):
+                for item in column.get("elements", []):
+                    content = item.get("text", {}).get("content", "")
+                    if "执行通过率" in content:
+                        return content
         return ""
 
     def test_legacy_summary_cannot_exceed_one_hundred_percent(self) -> None:
@@ -494,7 +500,8 @@ class ExecutedPassRateTests(unittest.TestCase):
 
         rate = self._rate(card_template(summary, exit_code="1"))
 
-        self.assertIn("100.0%（9/9）", rate)
+        self.assertIn("100.0%", rate)
+        self.assertIn("9/9", rate)
         self.assertNotIn("450", rate)
 
     def test_denominator_counts_passed_plus_business_failures(self) -> None:
@@ -514,7 +521,8 @@ class ExecutedPassRateTests(unittest.TestCase):
 
         rate = self._rate(card_template(summary, exit_code="1"))
 
-        self.assertIn("92.3%（12/13）", rate)
+        self.assertIn("92.3%", rate)
+        self.assertIn("12/13", rate)
 
     def test_zero_results_does_not_divide_by_zero(self) -> None:
         summary = {
@@ -530,7 +538,8 @@ class ExecutedPassRateTests(unittest.TestCase):
 
         rate = self._rate(card_template(summary, exit_code="0"))
 
-        self.assertIn("0.0%（0/0）", rate)
+        self.assertIn("0.0%", rate)
+        self.assertIn("0/0", rate)
 
 
 class FailedCaseListingTests(unittest.TestCase):
@@ -645,7 +654,7 @@ class FailedCaseListingTests(unittest.TestCase):
         )
 
         rendered = json.dumps(card, ensure_ascii=False)
-        self.assertIn("失败用例", rendered)
+        self.assertIn("用例明细", rendered)
         self.assertIn("tc05", rendered)
         buttons = [
             button
