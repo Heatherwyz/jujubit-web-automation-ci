@@ -1010,6 +1010,7 @@ class MembershipPage:
                 // 影响。这里直接置真：本组用例验证的是"入口开启后的文案换算"，
                 // 实验分配本身由 MEM-27 覆盖。
                 host._membershipCartEntryEnabled = true;
+                host._membershipCartEntryResolved = true;
                 host.cart = {
                     ...(host.cart || {}),
                     item_count: Math.max(1, (host.cart && host.cart.item_count) || 1),
@@ -1018,12 +1019,24 @@ class MembershipPage:
                     total_price: subtotal,
                     total_discount: discount,
                 };
-                const slot = host.querySelector('.cc-membership-slot');
+                const slot = host.querySelector('.cc-membership-slot')
+                    || host.querySelector('.cc-footer');
                 if (!slot) {
-                    return {ok: false, reason: '未找到 .cc-membership-slot 挂载点'};
+                    return {ok: false, reason: '未找到购物车会员入口挂载位置'};
                 }
-                slot.innerHTML = host.membershipEntryHtml('cart_whole');
-                return {ok: true, html: slot.innerHTML.slice(0, 200)};
+                // 线上主题已移除 .cc-membership-slot，但 loadMembershipEntry 仍向它
+                // 写入 HTML。测试只验证文案规则，因此在 footer 前补回同名挂载点，
+                // 仍调用主题自己的 membershipEntryHtml()，不改文案实现。
+                const target = slot.classList.contains('cc-membership-slot')
+                    ? slot
+                    : slot.parentElement.insertBefore(
+                        Object.assign(document.createElement('div'), {
+                            className: 'cc-membership-slot',
+                        }),
+                        slot,
+                    );
+                target.innerHTML = host.membershipEntryHtml('cart_whole');
+                return {ok: true, html: target.innerHTML.slice(0, 200)};
             }""",
             [subtotal_cents, discount_cents],
         )
