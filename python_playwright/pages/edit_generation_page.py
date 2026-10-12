@@ -21,7 +21,17 @@ class EditGenerationPage:
         self.home = home
 
     def enable_experiment(self) -> None:
-        """按确认过的 Statsig 覆盖值开启 edit_generation。"""
+        """按确认过的 Statsig 覆盖值开启 edit_generation。
+
+        覆盖值必须在页面加载前写入，并且写入后要再刷新一次：H5 首次加载时
+        实验分组已经确定，只写 localStorage 不会让已渲染的 Gallery 出现 Edit。
+        """
+        self.page.add_init_script(
+            """() => localStorage.setItem(
+                '_statsig_override',
+                JSON.stringify({edit_generation: {enable: true}})
+            )"""
+        )
         self.home.open(self.PATH)
         self.page.evaluate(
             """() => localStorage.setItem(
