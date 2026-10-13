@@ -64,7 +64,7 @@ def test_tc07_navigation_has_core_entries(home, test_platform):
     """TC-07：PC/H5 主导航均展示四个核心业务入口。"""
     home.close_welcome_popup()
     nav = home.navigation_root(test_platform)
-    labels = ["Create", "Templates", "Categories", "How It Works"]
+    labels = ["Create", "Collections", "Art Toys", "Crystal Bracelets", "Keycaps", "About Us"]
     if test_platform == "h5":
         actual = [text.strip() for text in nav.locator("a.jjb-mobile-nav__link").all_text_contents()]
         for label in labels:
