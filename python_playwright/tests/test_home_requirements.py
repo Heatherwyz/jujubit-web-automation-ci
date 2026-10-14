@@ -251,34 +251,34 @@ def test_hero_lcp_media_is_eager(home, page, test_platform):
     first_slide = banner.locator("[data-banner-slide]").first
     platform_media = "mb" if test_platform == "h5" else "pc"
     # 首屏性能应检查初始 slide 在当前端实际使用的图片，不受自动轮播切换影响。
-    hero_image = first_slide.locator(
-        f".jjb-banner__media-wrap--{platform_media} img"
+    hero_media = first_slide.locator(
+        f".jjb-banner__media-wrap--{platform_media} .jjb-banner__media"
     ).first
-    expect(hero_image).to_be_attached()
-    loading = hero_image.get_attribute("loading")
+    expect(hero_media).to_be_attached()
+    loading = hero_media.get_attribute("loading")
     if loading == "lazy":
         if test_platform in KNOWN_LAZY_HERO_PLATFORMS:
             pytest.xfail(
-                f"已知问题：{test_platform.upper()} 端 Hero 图片仍是 "
+                f"已知问题：{test_platform.upper()} 端 Hero 媒体仍是 "
                 "loading=lazy，会延迟首屏 LCP。等待主题侧改为 eager；"
                 "修复后请从 KNOWN_LAZY_HERO_PLATFORMS 移除该端以恢复断言。"
             )
         home.mark_failure_evidence(
-            hero_image,
-            "Hero 首屏图片使用 loading=lazy，应改为 eager 或移除 lazy。",
+            hero_media,
+            "Hero 首屏媒体使用 loading=lazy，应改为 eager 或移除 lazy。",
         )
         raise AssertionError(
-            "需求预期：Hero 首屏图片立即加载；"
-            "实际：图片使用 loading=lazy，可能延迟首屏最大内容绘制（LCP）"
+            "需求预期：Hero 首屏媒体立即加载；"
+            "实际：媒体使用 loading=lazy，可能延迟首屏最大内容绘制（LCP）"
         )
-    has_dimensions = bool(hero_image.get_attribute("width") and hero_image.get_attribute("height"))
-    has_aspect_ratio = hero_image.evaluate("el => getComputedStyle(el).aspectRatio !== 'auto'")
+    has_dimensions = bool(hero_media.get_attribute("width") and hero_media.get_attribute("height"))
+    has_aspect_ratio = hero_media.evaluate("el => getComputedStyle(el).aspectRatio !== 'auto'")
     if not (has_dimensions or has_aspect_ratio):
         home.mark_failure_evidence(
-            hero_image,
-            "Hero 图片未设置 width/height，也没有 CSS aspect-ratio。",
+            hero_media,
+            "Hero 媒体未设置 width/height，也没有 CSS aspect-ratio。",
         )
-        raise AssertionError("Hero 图片必须通过 width/height 或 aspect-ratio 预留布局空间")
+        raise AssertionError("Hero 媒体必须通过 width/height 或 aspect-ratio 预留布局空间")
 
 
 def test_configured_internal_links_are_available(home, page, test_platform):

@@ -503,7 +503,7 @@ class HomePage:
         # 按钮文案；以明确的 CTA 标记和可见按钮文字锁定业务入口，避免误选
         # 被标题覆盖的背景锚点。
         cta_label = self.page.locator(".jjb-banner__btn:visible").filter(
-            has_text=re.compile(r"^\s*Create\s+Your\s+Own\s*$", re.I)
+            has_text=re.compile(r"create\s+your\s+own", re.I)
         )
         cta = active_slide.locator(
             'a[data-gtm-item="hero-cta"]:visible'

@@ -64,7 +64,7 @@ def test_tc07_navigation_has_core_entries(home, test_platform):
     """TC-07：PC/H5 主导航均展示四个核心业务入口。"""
     home.close_welcome_popup()
     nav = home.navigation_root(test_platform)
-    labels = ["Create", "Collections", "Art Toys", "Crystal Bracelets", "Keycaps", "About Us"]
+    labels = ["Create", "Templates", "Categories", "How It Works"]
     if test_platform == "h5":
         actual = [text.strip() for text in nav.locator("a.jjb-mobile-nav__link").all_text_contents()]
         for label in labels:
@@ -92,13 +92,17 @@ def test_tc09_hero_image_is_visible(home, page, test_platform):
     # 当前端只应显示 PC 或 H5 对应的一张媒体；这也能发现响应式样式错误地同时
     # 展示两张 Hero 图片的情况。
     platform_media = "mb" if test_platform == "h5" else "pc"
-    active_image = active_slide.locator(
-        f".jjb-banner__media-wrap--{platform_media}:visible > img.jjb-banner__media"
+    # 当前端的 Hero 媒体可能是图片，也可能是自动播放视频。只检查当前端容器，
+    # 避免把 PC/H5 两套媒体同时算进来。
+    active_media = active_slide.locator(
+        f".jjb-banner__media-wrap--{platform_media}:visible > .jjb-banner__media"
     )
-    expect(active_image).to_have_count(1)
-    assert active_image.evaluate(
-        "element => element.complete && element.naturalWidth > 0"
-    ), "当前 Hero 轮播项的图片未成功加载"
+    expect(active_media).to_have_count(1)
+    assert active_media.evaluate(
+        """element => element.tagName === 'VIDEO'
+            ? element.readyState >= 1
+            : element.complete && element.naturalWidth > 0"""
+    ), "当前 Hero 轮播项的媒体未成功加载"
 
 
 def test_tc10_hero_create_link_is_correct(home, page, test_platform):
