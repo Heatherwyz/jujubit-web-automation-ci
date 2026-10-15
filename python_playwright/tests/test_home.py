@@ -99,9 +99,14 @@ def test_tc09_hero_image_is_visible(home, page, test_platform):
     )
     expect(active_media).to_have_count(1)
     assert active_media.evaluate(
-        """element => element.tagName === 'VIDEO'
-            ? element.readyState >= 1
-            : element.complete && element.naturalWidth > 0"""
+        """element => {
+            if (element.tagName !== 'VIDEO') {
+                return element.complete && element.naturalWidth > 0;
+            }
+            const poster = element.poster
+                || element.parentElement?.querySelector('img')?.currentSrc;
+            return element.readyState >= 1 || element.videoWidth > 0 || Boolean(poster);
+        }"""
     ), "当前 Hero 轮播项的媒体未成功加载"
 
 

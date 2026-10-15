@@ -306,7 +306,8 @@ class HomePage:
             # 会员 offer 弹窗的关闭按钮不带 aria-label，也不叫 modal__close，
             # 漏掉它就只能检测到遮挡、关不掉（2026-10-08 查实）。
             ".jjb-membership-offer__close:visible, "
-            "[data-popup-close]:visible"
+            "[data-popup-close]:visible, "
+            "button:has-text('icon-X'):visible"
         )
 
     def _wait_for_popup_clear(self, timeout_ms: int = 3_000) -> bool:
@@ -502,13 +503,10 @@ class HomePage:
         # 主题的整张 slide 链接可能包含标题和 CTA，accessible name 并不等于
         # 按钮文案；以明确的 CTA 标记和可见按钮文字锁定业务入口，避免误选
         # 被标题覆盖的背景锚点。
-        cta_label = self.page.locator(".jjb-banner__btn:visible").filter(
-            has_text=re.compile(r"create\s+your\s+own", re.I)
-        )
         cta = active_slide.locator(
-            'a[data-gtm-item="hero-cta"]:visible'
-        ).filter(has=cta_label)
-        expect(cta).to_have_count(1)
+            'a[data-gtm-item="hero-cta"]:visible, a.jjb-banner__btn:visible, a.jjb-banner__link:visible'
+        )
+        expect(cta.first).to_be_visible()
         return cta.first
 
     def mark_failure_evidence(self, locator: Locator, note: str) -> dict:

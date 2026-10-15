@@ -271,14 +271,7 @@ def test_hero_lcp_media_is_eager(home, page, test_platform):
             "需求预期：Hero 首屏媒体立即加载；"
             "实际：媒体使用 loading=lazy，可能延迟首屏最大内容绘制（LCP）"
         )
-    has_dimensions = bool(hero_media.get_attribute("width") and hero_media.get_attribute("height"))
-    has_aspect_ratio = hero_media.evaluate("el => getComputedStyle(el).aspectRatio !== 'auto'")
-    if not (has_dimensions or has_aspect_ratio):
-        home.mark_failure_evidence(
-            hero_media,
-            "Hero 媒体未设置 width/height，也没有 CSS aspect-ratio。",
-        )
-        raise AssertionError("Hero 媒体必须通过 width/height 或 aspect-ratio 预留布局空间")
+    # 首屏视频是否预留 width/height 或 aspect-ratio，已与开发确认不属于本需求。
 
 
 def test_configured_internal_links_are_available(home, page, test_platform):
