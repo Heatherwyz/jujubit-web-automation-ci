@@ -86,6 +86,17 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--pw-ab-group",
+        choices=("default", "1", "2", "3"),
+        default="default",
+        help=(
+            "AB 平台实验分组，按 stableID 取值：1 是 Control，2 是 Test，3 是 Test2。"
+            "default（默认）不写 stableID，保持线上随机分桶，每日全量用这个。"
+            "只对受实验控制的用例生效；分组没在 Statsig 配覆盖规则时，用例会如实"
+            "报未完成而不是按随机分桶假装验证过。"
+        ),
+    )
+    parser.addoption(
         "--pw-artifact-dir",
         default="",
         help="保存本次报告、截图和失败视频的目录；run_all.py 会自动传入时间戳目录。",

@@ -334,6 +334,7 @@ def page(browser, cart_contexts, request, test_platform):
     if is_cart_session:
         _restore_cart_session_storage(current_page, request.config, test_platform)
     _apply_shop_mode(current_page, request.config)
+    _apply_ab_group(current_page, request.config)
     current_page.set_default_timeout(10_000)
     current_page.set_default_navigation_timeout(30_000)
     yield current_page
@@ -496,6 +497,122 @@ def _apply_shop_mode(page, config) -> None:
             }
         })();"""
     )
+
+
+# AB 平台分组口径：stableID 1 是 Control，2 是 Test，3 是 Test2。
+# 2026-10-16 实测线上站点确认（两轮结果一致）：
+#   - stableID=1 → membership_entry_redirect、discount_badge_removal 命中
+#     `...:stableID:id_override` 规则，返回 Control；
+#   - stableID=2 → 同样命中 id_override，返回 Test；
+#   - stableID=3 → 这两个实验都没有配 3 的覆盖规则，退化成按 ID 哈希分桶
+#     （实测分别落到 Control 和 Test），不能当 Test2 用。
+# 所以注入后必须回读 rule_id 验证，而不是写完就当分组已生效。
+AB_GROUP_NAMES = {"1": "Control", "2": "Test", "3": "Test2"}
+
+# Statsig 把 stableID 存在带哈希后缀的键里，键名随 SDK key 变化，
+# 不能写死；注入脚本按前缀匹配，必要时按站点当前后缀新建。
+STATSIG_STABLE_ID_PREFIX = "statsig.stable_id."
+STATSIG_EVALUATIONS_PREFIX = "statsig.cached.evaluations."
+
+
+def _apply_ab_group(page, config) -> None:
+    """按 --pw-ab-group 把 Statsig stableID 固定为 1/2/3，用于按分组跑实验用例。
+
+    default（默认）时什么都不做，保持线上随机分桶——每日全量走这条路，
+    不会把所有用例按三组各跑一遍。
+
+    用 add_init_script 而不是 evaluate：分组在首次加载时就已确定，
+    写完再刷新只能影响下一跳，init script 对每个文档都在站点脚本之前执行。
+    同时清掉缓存的评估结果，否则 SDK 会直接复用上一个 stableID 的分组。
+    """
+    group = config.getoption("--pw-ab-group")
+    if group == "default":
+        return
+    page.add_init_script(
+        script=f"""(() => {{
+            try {{
+                const target = {group!r};
+                const stablePrefix = {STATSIG_STABLE_ID_PREFIX!r};
+                const evalPrefix = {STATSIG_EVALUATIONS_PREFIX!r};
+                const keys = Object.keys(window.localStorage);
+                // 已有 stableID 键就改值；没有则无法猜出哈希后缀，
+                // 留给站点自己建，下一跳 init script 会再写一次。
+                const stableKeys = keys.filter((k) => k.startsWith(stablePrefix));
+                for (const key of stableKeys) {{
+                    window.localStorage.setItem(key, JSON.stringify(target));
+                }}
+                // 清掉旧分组缓存，强制按新 stableID 重新求值。
+                for (const key of keys) {{
+                    if (key.startsWith(evalPrefix)) {{
+                        window.localStorage.removeItem(key);
+                    }}
+                }}
+            }} catch (error) {{
+                // about:blank 还不能访问 localStorage；真正导航后会再执行一次。
+            }}
+        }})();"""
+    )
+
+
+def read_ab_group(page, experiment: str) -> dict:
+    """回读某个实验当前的分组与规则，判断分组是否真的由 stableID 决定。
+
+    返回 ``group``（Statsig 给的组名）、``rule``（规则 ID）和 ``overridden``
+    （规则里是否带 id_override）。``overridden`` 为假说明这个实验没有为当前
+    stableID 配覆盖规则，分组是哈希分桶的随机结果，不能用来验收。
+    """
+    result = page.evaluate(
+        """(name) => {
+            const client = window.statsigClient;
+            if (!client || typeof client.getExperiment !== 'function') {
+                return { group: null, rule: null, available: false };
+            }
+            try {
+                const exp = client.getExperiment(name);
+                return {
+                    group: exp.groupName || null,
+                    rule: exp.ruleID || null,
+                    available: true,
+                };
+            } catch (error) {
+                return { group: null, rule: null, available: false };
+            }
+        }""",
+        experiment,
+    )
+    rule = str(result.get("rule") or "")
+    result["overridden"] = "id_override" in rule
+    return result
+
+
+def require_ab_group(page, config, experiment: str) -> None:
+    """确认实验分组真的按 --pw-ab-group 生效，否则跳过并说明原因。
+
+    分组没生效时报未完成（skip）而不是失败：这是 Statsig 后台缺覆盖规则，
+    不是站点缺陷；也不能当通过，否则随机分桶的结果会被当成验收过的分组。
+    """
+    group = config.getoption("--pw-ab-group")
+    if group == "default":
+        return
+    expected = AB_GROUP_NAMES[group]
+    state = read_ab_group(page, experiment)
+    if not state["available"]:
+        pytest.skip(
+            f"未完成：页面上取不到 Statsig 客户端，无法确认实验 {experiment} "
+            f"是否在分组 {group}（{expected}）"
+        )
+    if not state["overridden"]:
+        pytest.skip(
+            f"未完成：实验 {experiment} 没有为 stableID={group} 配置覆盖规则，"
+            f"当前分组 {state['group']!r} 来自哈希分桶（规则 {state['rule']!r}），"
+            f"不是指定的 {expected}。需在 Statsig 后台为该实验补 stableID "
+            f"覆盖规则后再按分组跑。"
+        )
+    if state["group"] != expected:
+        pytest.skip(
+            f"未完成：实验 {experiment} 在 stableID={group} 下返回分组 "
+            f"{state['group']!r}，与约定的 {expected} 不一致，分组口径需确认。"
+        )
 
 
 def _restore_cart_session_storage(page, config, platform: str) -> None:
