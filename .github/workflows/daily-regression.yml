@@ -371,7 +371,7 @@ jobs:
           fi
 
           echo "index_url=${PAGES_BASE}/index.html" >> "$GITHUB_OUTPUT"
-          echo "报告索引：$raw_base/index.html"
+          echo "报告索引：${PAGES_BASE}/index.html"
 
       # ---- 最终退出码 ----
       - name: 综合退出码

@@ -109,5 +109,38 @@ class AnalyticsEventNameTests(unittest.TestCase):
         self.assertIn("_membershipCartEntryEnabled = true", source)
 
 
+class EventRecordingSurvivesNavigationTests(unittest.TestCase):
+    """埋点记录必须扛住页面跳转。
+
+    2026-10-18 实测 test_mem43 失败：点 Get 后页面导航，下一次
+    `page.evaluate("() => window.__jjbTrackedEvents")` 撞上
+    execution context destroyed，整条用例报错。window 里的记录也随旧文档销毁。
+
+    这里钉住修复的两个关键点，防回退：
+    1. 记录要同时写 sessionStorage，同源导航后还能读到；
+    2. 读取要对 evaluate 崩溃容错，返回空让轮询继续，而不是把用例炸掉。
+    """
+
+    def test_record_persists_to_session_storage(self) -> None:
+        source = PAGE_OBJECT.read_text(encoding="utf-8")
+
+        self.assertIn("__jjbTrackedEventsLog", source)
+        self.assertIn("sessionStorage.setItem", source)
+        # 初始化时先从持久化读回，否则导航后新文档会把记录清零。
+        self.assertIn("readPersisted", source)
+
+    def test_tracked_events_tolerates_navigation_race(self) -> None:
+        source = PAGE_OBJECT.read_text(encoding="utf-8")
+        start = source.index("def tracked_events")
+        end = source.index("\n    def ", start + 10)
+        body = source[start:end]
+
+        # evaluate 外层必须有容错，导航销毁时返回空列表而不是抛出去。
+        self.assertIn("except Exception", body)
+        self.assertIn("return []", body)
+        # 读取要带上 sessionStorage 里跨导航累积的那份。
+        self.assertIn("__jjbTrackedEventsLog", body)
+
+
 if __name__ == "__main__":
     unittest.main()

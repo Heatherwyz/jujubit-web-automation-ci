@@ -1059,13 +1059,28 @@ class MembershipPage:
         self.page.add_init_script(
             """
             (() => {
-                window.__jjbTrackedEvents = [];
+                // 事件同时写 window 与 sessionStorage：点击 Get 后页面可能
+                // 跳转（10-18 实测 mem43 撞上 execution context destroyed），
+                // window 里的记录随旧文档销毁，sessionStorage 在同源导航后仍在。
+                const LOG_KEY = '__jjbTrackedEventsLog';
+                const readPersisted = () => {
+                    try {
+                        return JSON.parse(sessionStorage.getItem(LOG_KEY) || '[]');
+                    } catch (e) {
+                        return [];
+                    }
+                };
+                window.__jjbTrackedEvents = readPersisted();
                 const record = (name, params) => {
                     try {
-                        window.__jjbTrackedEvents.push({
+                        const entry = {
                             name: String(name),
                             params: params || {},
-                        });
+                        };
+                        window.__jjbTrackedEvents.push(entry);
+                        const persisted = readPersisted();
+                        persisted.push(entry);
+                        sessionStorage.setItem(LOG_KEY, JSON.stringify(persisted));
                     } catch (e) {}
                 };
                 // 只包一次 track 不够：zlog 脚本会在自己初始化完成后，往同一个
@@ -1113,8 +1128,31 @@ class MembershipPage:
         )
 
     def tracked_events(self, name: str = "") -> list[dict]:
-        """取已记录的埋点事件，可按事件名过滤。"""
-        events = self.page.evaluate("() => window.__jjbTrackedEvents || []")
+        """取已记录的埋点事件，可按事件名过滤。
+
+        导航瞬间 evaluate 会撞 execution context destroyed；页面跳转后
+        window 里的记录也被重置。两条都兜底：崩溃按"此刻没有"返回空，
+        让 wait_for_tracked_event 继续轮询；能读时以 sessionStorage 里
+        跨导航累积的那份为准。
+        """
+        try:
+            events = self.page.evaluate(
+                """() => {
+                    const fromWindow = window.__jjbTrackedEvents || [];
+                    try {
+                        const persisted = JSON.parse(
+                            sessionStorage.getItem('__jjbTrackedEventsLog') || '[]'
+                        );
+                        return persisted.length >= fromWindow.length
+                            ? persisted
+                            : fromWindow;
+                    } catch (e) {
+                        return fromWindow;
+                    }
+                }"""
+            )
+        except Exception:
+            return []
         if not isinstance(events, list):
             return []
         if not name:
