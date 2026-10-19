@@ -124,6 +124,16 @@ def _parse_args():
             "默认必须是 live——测试链路与线上行为不一致，不能用它做日常验收。"
         ),
     )
+    parser.add_argument(
+        "--ab-group",
+        choices=("default", "1", "2", "3"),
+        default="default",
+        help=(
+            "AB 实验分组，按 Statsig stableID 取值：1 是 Control，2 是 Test，"
+            "3 是 Test2。default（默认）不固定 stableID，按线上随机分桶跑一遍，"
+            "每日全量用这个；只有验收某个实验时才按分组单独跑。"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -189,6 +199,9 @@ def main() -> int:
         # live（默认）保持线上链路；test 让主题走测试环境分支。
         "--pw-shop-mode",
         args.shop_mode,
+        # default（默认）按线上随机分桶跑一遍；1/2/3 固定 stableID 验收单个实验。
+        "--pw-ab-group",
+        args.ab_group,
         "--pw-artifact-dir",
         str(RUN_DIR),
         "--pw-report-name",

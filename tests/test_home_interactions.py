@@ -75,8 +75,17 @@ class _HeroPage(_Page):
 
 
 class _Assertions:
+    """记录生产代码实际用到的断言，供用例核对是否仍在守边界。"""
+
+    def __init__(self, used):
+        self.used = used
+
     def to_have_count(self, expected):
+        self.used.append(("to_have_count", expected))
         assert expected == 1
+
+    def to_be_visible(self):
+        self.used.append(("to_be_visible",))
 
 
 class HomeInteractionTests(unittest.TestCase):
@@ -120,31 +129,42 @@ class HomeInteractionTests(unittest.TestCase):
     def test_active_hero_cta_uses_active_slide_and_explicit_cta_marker(self):
         home = object.__new__(HomePage)
         home.page = _HeroPage()
+        used = []
 
         with patch(
             "python_playwright.pages.home_page.expect",
-            side_effect=lambda locator: _Assertions(),
+            side_effect=lambda locator: _Assertions(used),
         ):
             result = home.active_hero_cta()
 
         self.assertIsNotNone(result)
+        # CTA 必须从当前激活的那张 slide 里找，不能扫整个轮播。
         self.assertIn(
             ("locator", "banner", "[data-banner-slide].is-active"),
             home.page.calls,
         )
+        # 必须带 hero-cta 标记，避免误选被标题覆盖的背景锚点。
+        cta_queries = [
+            call[2]
+            for call in home.page.calls
+            if call[:2] == ("locator", "[data-banner-slide].is-active")
+        ]
+        self.assertTrue(
+            any('data-gtm-item="hero-cta"' in query for query in cta_queries),
+            f"CTA 查询里必须有 hero-cta 标记，实际是 {cta_queries}",
+        )
+        # 候选选择器都要带 :visible，否则会选中隐藏的占位锚点。
         self.assertTrue(
             any(
-                call[:2] == ("locator", "[data-banner-slide].is-active")
-                and 'data-gtm-item="hero-cta"' in call[2]
-                for call in home.page.calls
-            )
+                ".jjb-banner__btn:visible" in query
+                and ".jjb-banner__link:visible" in query
+                for query in cta_queries
+            ),
+            f"按钮与链接候选都必须限定 :visible，实际是 {cta_queries}",
         )
-        self.assertTrue(
-            any(
-                call[0] == "page_locator" and ".jjb-banner__btn:visible" in call[1]
-                for call in home.page.calls
-            )
-        )
+        # 唯一激活 slide 与 CTA 可见这两条断言都不能丢。
+        self.assertIn(("to_have_count", 1), used)
+        self.assertIn(("to_be_visible",), used)
 
     def test_login_case_source_filters_hidden_ab_variants(self):
         """登录入口必须只统计当前可见 A/B 变体，不能让隐藏按钮抢占分支。"""
