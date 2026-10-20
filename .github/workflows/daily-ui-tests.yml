@@ -5,10 +5,12 @@ on:
   # schedule 已停用：GitHub cron 对本仓库长期迟到 4–5 小时。
   # 准时触发由外部 workflow_dispatch 负责（北京时间 09:00 / 21:00）。
 
-# 首页和购物车工作流共用同一个并发组，任何时刻只允许一个 Runner 访问站点。
-# 不取消正在执行的完整购物车回归，后来的定时任务会排队，避免重跑又产生一轮登录请求。
+# 并发组按工作流拆分：妙搭几秒内连发多个工作流时，共享组会让 GitHub 把
+# 还没开始跑的旧 pending 运行顶掉（每组只保留一个 pending），飞书收到
+# 一批"已取消"的误报卡片。按工作流分组后各跑各的，互不顶掉；
+# 同一工作流被重复触发时，新的 pending 仍会取代旧的 pending（去重语义保留）。
 concurrency:
-  group: jujubit-site-ui-tests
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 permissions:

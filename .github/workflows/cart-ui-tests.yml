@@ -15,9 +15,13 @@ on:
   # schedule 已停用：GitHub cron 对本仓库长期迟到 4–5 小时。
   # 准时触发由外部 workflow_dispatch 负责（北京时间 09:00 / 21:00）。
 
-# 与每日首页回归串行执行，避免两个 Runner 从不同出口同时访问同一登录账号。
+# 并发组按工作流拆分：共享组时妙搭连发会把本工作流的 pending 运行顶掉
+# （每组只保留一个 pending），产生"已取消"误报。
+# 注意残余风险：本工作流会真实登录并操作测试账号购物车，与「每日全量回归」
+# 的购物车阶段同时跑会互相干扰（数量断言串数据）。妙搭触发时不要同时发
+# 本工作流和全量回归；定时全量内部是串行的，不受影响。
 concurrency:
-  group: jujubit-site-ui-tests
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 permissions:

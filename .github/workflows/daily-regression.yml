@@ -14,8 +14,12 @@ name: 每日全量回归（北京 09:00 / 21:00）
 on:
   workflow_dispatch:
 
+# 并发组按工作流拆分：共享组时妙搭连发会把本工作流的 pending 运行顶掉
+# （每组只保留一个 pending），产生"已取消"误报。本工作流内部各套件
+# 串行执行，不受影响；不要与 cart-ui-tests 同时触发，两边的购物车阶段
+# 会操作同一测试账号。
 concurrency:
-  group: jujubit-site-ui-tests
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 permissions:
