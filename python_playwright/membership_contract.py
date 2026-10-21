@@ -63,6 +63,25 @@ MOST_POPULAR_TIER = "Pro"
 MOST_POPULAR_TEXT = "Most Popular"
 
 
+def displayed_price_matches(text: str, expected: str) -> bool:
+    """页面或 HTML 里的价格是否对得上期望值。
+
+    主题常把 ``$19.90`` 渲染成 ``$19.9``（末尾 0 被吃掉），金额相同，
+    按同一金额认，不把少一位小数当成价格改了。契约层和浏览器层共用。
+    """
+    haystack = re.sub(r"[,\s]", "", text)
+    amount = expected.lstrip("$").replace(",", "")
+    variants = {amount}
+    if re.fullmatch(r"\d+\.\d0", amount):
+        variants.add(amount[:-1])
+    elif re.fullmatch(r"\d+\.\d", amount):
+        variants.add(amount + "0")
+    return any(
+        re.search(rf"(?<!\d){re.escape(variant)}(?!\d)", haystack)
+        for variant in variants
+    )
+
+
 def _normalize(html: str) -> str:
     """折叠空白，便于子串匹配。"""
     return re.sub(r"\s+", " ", html)
@@ -87,9 +106,8 @@ def check_monthly_prices(html: str) -> list[str]:
     for tier, price in EXPECTED_MONTHLY_PRICES.items():
         if tier in KNOWN_PRICE_MISMATCH_TIERS:
             continue
-        # 匹配 $19.90 或 19.90（不含 $）
-        amount = price.lstrip("$")
-        if amount not in html and price not in html:
+        # 主题常把 $19.90 写成 $19.9，金额相同就算出现。
+        if not displayed_price_matches(html, price):
             problems.append(f"{tier} 月付价格 {price} 未出现在 HTML 中")
     return problems
 

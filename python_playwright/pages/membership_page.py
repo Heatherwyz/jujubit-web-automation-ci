@@ -46,6 +46,10 @@ TIERS = ("Basic", "Pro", "Premium")
 MONTHLY_PRICES = {"Basic": "Free", "Pro": "$19.90", "Premium": "$199.90"}
 YEARLY_PRICES = {"Pro": "$238.80", "Premium": "$2,398.80"}
 FIRST_YEAR_PRICES = {"Pro": "$191.04", "Premium": "$1,919.04"}
+# 2026-10-21 改版：新版付费墙年付态把首年价显示成月折算价（首年总价 ÷12），
+# 不再显示年总价。$191.04/12=$15.92、$1,919.04/12=$159.92。断言首年折扣时
+# 两种展示都合法，按当前命中的版本接受其一。
+FIRST_YEAR_PRICES_MONTHLY_EQUIV = {"Pro": "$15.92", "Premium": "$159.92"}
 
 DAILY_GENERATE_LIMITS = {"Basic": 40, "Pro": 100, "Premium": 200}
 
@@ -119,18 +123,35 @@ AIRWALLEX_HOSTS = ("checkout.airwallex.com", "checkout-demo.airwallex.com")
 
 # --- 线上实测的选择器（2026-09-17 从 /pages/vip-program 真实 DOM 提取）---
 # 不要凭猜写 pricing-card / plan-card 之类：线上主题统一用 jjb-membership-* 前缀。
+#
+# 2026-10-21 付费墙改版（实验 2970521910：Control=旧版、Test=新版 visual 区块）。
+# 滚动上线期间新旧两版同页、任一时刻只有一版可见，旧版元素留在 DOM 里但 0×0。
+# 顶层枚举（卡片、账期开关）成对写新旧两类并加 :visible，让每次只命中当前可见
+# 那一版；子元素在已定位的卡片内各自唯一，不用加。改版 100% 后旧类名可删。
 SEL_PAYWALL = ".jjb-membership-paywall"
-SEL_PAYWALL_CARDS = ".jjb-membership-paywall__cards"
-SEL_PAYWALL_TOGGLE = ".jjb-membership-paywall__toggle"
+SEL_PAYWALL_CARDS = ".jjb-membership-paywall__cards, .jjb-membership-paywall-visual__cards"
+SEL_PAYWALL_TOGGLE = (
+    ".jjb-membership-paywall__toggle:visible, "
+    ".jjb-membership-paywall-visual__toggle:visible"
+)
 SEL_PAYWALL_QA = ".jjb-membership-paywall__qa"
 # 测试环境未上线时的全屏遮罩（文案 "Coming Soon…… Go Back"，z-index 20）。
 SEL_PAYWALL_COMING_SOON = ".jjb-membership-paywall__coming-soon"
-SEL_CARD = ".jjb-membership-card"
-SEL_CARD_TITLE = ".jjb-membership-card__title"
-SEL_CARD_PRICE = ".jjb-membership-card__price"
-SEL_CARD_BUTTON = ".jjb-membership-card__button"
-SEL_CARD_BADGE = ".jjb-membership-card__value-badge"
-SEL_CARD_FEATURES = ".jjb-membership-card__features"
+# 枚举用：新旧两版都在 DOM 里，H5 一次只显示一张，不能加 :visible，
+# 否则 wait_for_paywall / MEM-01 会把另外两张隐藏卡漏掉。
+SEL_CARD = ".jjb-membership-card, .jjb-membership-visual-card"
+# 交互用：只点当前看得见的那张，避免点到旧版 0×0 节点。
+SEL_CARD_VISIBLE = ".jjb-membership-card:visible, .jjb-membership-visual-card:visible"
+# 卡片档位名：旧版 __title，新版 __plan。
+SEL_CARD_TITLE = ".jjb-membership-card__title, .jjb-membership-visual-card__plan"
+# 价格：旧版 __price（"$19.90 / month"）；新版可读 __price-label（"$19.90"），
+# 不要用 __price/__price-value——它们带数字滚动动画，innerText 含一串 0-9。
+SEL_CARD_PRICE = ".jjb-membership-card__price, .jjb-membership-visual-card__price-label"
+SEL_CARD_BUTTON = ".jjb-membership-card__button, .jjb-membership-visual-card__button"
+# Most Popular 徽标：旧版 __value-badge，新版 __popular。
+SEL_CARD_BADGE = ".jjb-membership-card__value-badge, .jjb-membership-visual-card__popular"
+# 特性列表：旧版 __features（复数），新版 __feature（单数）。
+SEL_CARD_FEATURES = ".jjb-membership-card__features, .jjb-membership-visual-card__feature"
 
 # 半屏支付弹窗（支付拉起断言的核心）
 SEL_CHECKOUT = ".jjb-membership-checkout"
@@ -145,12 +166,18 @@ SEL_CHECKOUT_STATUS = ".jjb-membership-checkout__status"
 SEL_CHECKOUT_RETRY = ".jjb-membership-checkout__retry"
 SEL_CHECKOUT_CLOSE = ".jjb-membership-checkout__close"
 
-# 会员弹窗（开屏 offer）
-SEL_OFFER = ".jjb-membership-offer"
-SEL_OFFER_BRAND = ".jjb-membership-offer__brand"
-SEL_OFFER_SUBTITLE = ".jjb-membership-offer__subtitle"
-SEL_OFFER_CTA = ".jjb-membership-offer__cta"
-SEL_OFFER_CLOSE = ".jjb-membership-offer__close"
+# 会员弹窗（开屏 offer）。2026-10-21 改版新增 visual 变体，新旧选择器成对写。
+SEL_OFFER = ".jjb-membership-offer, .jjb-membership-offer-visual"
+SEL_OFFER_BRAND = ".jjb-membership-offer__brand, .jjb-membership-offer-visual__brand"
+SEL_OFFER_SUBTITLE = (
+    ".jjb-membership-offer__subtitle, .jjb-membership-offer-visual__subtitle"
+)
+SEL_OFFER_CTA = ".jjb-membership-offer__cta, .jjb-membership-offer-visual__cta"
+SEL_OFFER_CLOSE = (
+    ".jjb-membership-offer__close, .jjb-membership-offer-visual__close, "
+    ".jjb-membership-offer-visual__desktop-close, "
+    ".jjb-membership-offer-visual__mobile-close"
+)
 SEL_OFFER_BENEFITS = ".jjb-membership-offer__benefits"
 SEL_OFFER_BENEFIT_LABEL = ".jjb-membership-offer__benefit-label"
 SEL_OFFER_BENEFIT_VALUE = ".jjb-membership-offer__benefit-value"
@@ -322,7 +349,9 @@ class MembershipPage:
                     "付费墙处于 Coming Soon：该环境尚未上线会员功能，"
                     "卡片被全屏遮罩挡住，无法验证任何交互。"
                 )
-            if self.paywall_cards().count() >= 3:
+            if self.paywall_cards().count() >= 1 and self.page.locator(
+                SEL_CARD_VISIBLE
+            ).count() >= 1:
                 return
             self.page.wait_for_timeout(300)
         # 超时前再判一次：遮罩可能在最后一刻才挂上。
@@ -332,10 +361,14 @@ class MembershipPage:
                 "卡片被全屏遮罩挡住，无法验证任何交互。"
             )
         # 保留原行为：卡片始终没齐时按可见性超时报错，信息比"数量不足"更具体。
-        self.page.wait_for_selector(SEL_CARD, timeout=3_000)
+        self.page.wait_for_selector(SEL_CARD_VISIBLE, timeout=3_000)
 
     def switch_cycle(self, cycle: str) -> None:
-        """切换 Monthly / Yearly。线上是 .jjb-membership-paywall__toggle 内的按钮。
+        """切换 Monthly / Yearly 账期。
+
+        按 ``data-billing-cycle`` 属性定位，不按按钮文案：2026-10-21 改版把
+        年付标签从 "Yearly" 改成了 "Annually"，按文案找会漏；该属性在两版里
+        都是 monthly / yearly，稳定。
 
         两种弹窗都要关，它们是不同的遮罩：
         - newsletter 弹窗（.newsletter-popup-v2）：匿名访问时出现，
@@ -345,12 +378,9 @@ class MembershipPage:
         """
         self.home.close_popup_before_click()
         self.close_membership_popup(observe_timeout=TIMEOUT_OFFER_RENDER)
-        label = "Yearly" if cycle.lower() == "yearly" else "Monthly"
         toggle = self.page.locator(SEL_PAYWALL_TOGGLE)
         expect(toggle.first).to_be_visible(timeout=TIMEOUT_UI_RENDER)
-        target = toggle.locator(f"button:has-text('{label}'), *:has-text('{label}')").first
-        if not target.count():
-            target = self.page.locator(f"button:has-text('{label}')").first
+        target = toggle.locator(f"[data-billing-cycle='{cycle.lower()}']").first
         target.click()
         self.page.wait_for_timeout(2000)
 
@@ -370,7 +400,7 @@ class MembershipPage:
 
     def card_button(self, tier: str):
         """返回指定档位卡片上的主按钮。"""
-        card = self._find_tier_card(tier)
+        card = self._find_tier_card(tier, visible_only=True)
         return card.locator(SEL_CARD_BUTTON).first
 
     def card_button_text(self, tier: str) -> str:
@@ -411,9 +441,15 @@ class MembershipPage:
         """付费墙底部 Q&A 是否存在（线上 class：__qa）。"""
         return bool(self.page.locator(SEL_PAYWALL_QA).count())
 
-    def _find_tier_card(self, tier: str):
-        """按标题精确定位档位卡片。"""
-        return self.page.locator(SEL_CARD).filter(
+    def _find_tier_card(self, tier: str, *, visible_only: bool = False):
+        """按标题精确定位档位卡片。
+
+        H5 一次只显示一张：读价格要看 DOM 里另外两张隐藏卡，所以默认不加
+        :visible。点 Get / 断言当前可见卡片时传 ``visible_only=True``，避免点到
+        旧版 0×0 节点。
+        """
+        selector = SEL_CARD_VISIBLE if visible_only else SEL_CARD
+        return self.page.locator(selector).filter(
             has=self.page.locator(SEL_CARD_TITLE, has_text=re.compile(rf"^\s*{tier}\s*$"))
         ).first
 
@@ -782,9 +818,12 @@ class MembershipPage:
         texts = []
         for index in range(tabs.count()):
             raw = tabs.nth(index).inner_text().strip().upper()
-            # Yearly 页签带折扣副标题，按首行判断即可。
+            # Yearly / Annually 页签带折扣副标题，按首行判断即可。
+            # 2026-10-21 改版把年付标签改成 Annually，不排除会把账期 Tab 混进视图切换。
             first_line = raw.splitlines()[0].strip() if raw else ""
-            if first_line in {"MONTHLY", "YEARLY"} or first_line.startswith("YEARLY"):
+            if first_line in {"MONTHLY", "YEARLY", "ANNUALLY"} or first_line.startswith(
+                ("YEARLY", "ANNUALLY")
+            ):
                 continue
             if first_line:
                 texts.append(first_line)
@@ -1198,9 +1237,11 @@ class MembershipPage:
     # ---- 弹窗 ----
 
     def membership_popup_visible(self) -> bool:
-        """会员开屏弹窗是否可见（线上 class：jjb-membership-offer）。"""
-        popup = self.page.locator(SEL_OFFER)
-        return bool(popup.count()) and popup.first.is_visible()
+        """会员开屏弹窗是否可见（线上 class：jjb-membership-offer / offer-visual）。"""
+        popup = self.page.locator(
+            ".jjb-membership-offer:visible, .jjb-membership-offer-visual:visible"
+        )
+        return popup.count() > 0
 
     def membership_popup_title(self) -> str:
         """弹窗品牌标题（线上 class：__brand）。"""
@@ -1240,14 +1281,18 @@ class MembershipPage:
 
     def membership_popup_button_text(self) -> str:
         """弹窗主按钮文案（线上 class：__cta）。"""
-        cta = self.page.locator(SEL_OFFER_CTA)
+        cta = self.page.locator(
+            ".jjb-membership-offer__cta:visible, .jjb-membership-offer-visual__cta:visible"
+        )
         if cta.count():
             return re.sub(r"\s+", " ", cta.first.inner_text()).strip()
         return ""
 
     def click_popup_cta(self) -> None:
         """点击弹窗主按钮（Join for ...）。"""
-        cta = self.page.locator(SEL_OFFER_CTA).first
+        cta = self.page.locator(
+            ".jjb-membership-offer__cta:visible, .jjb-membership-offer-visual__cta:visible"
+        ).first
         expect(cta).to_be_visible(timeout=TIMEOUT_UI_RENDER)
         cta.click()
 
@@ -1260,14 +1305,18 @@ class MembershipPage:
         return bool(
             self.page.evaluate(
                 """(sel) => {
-                    const offer = document.querySelector(sel);
-                    if (!offer) return false;
-                    if (!offer.offsetParent) return false;
-                    const style = getComputedStyle(offer);
-                    if (style.display === 'none' || style.visibility === 'hidden') {
-                        return false;
+                    // querySelector 只返回文档里第一个匹配；旧版 offer 常在 DOM
+                    // 前面且高度为 0，新版 visual 才是真正挡点击的那层。
+                    const offers = document.querySelectorAll(sel);
+                    for (const offer of offers) {
+                        if (!offer.offsetParent) continue;
+                        const style = getComputedStyle(offer);
+                        if (style.display === 'none' || style.visibility === 'hidden') {
+                            continue;
+                        }
+                        if (offer.getBoundingClientRect().height > 0) return true;
                     }
-                    return offer.getBoundingClientRect().height > 0;
+                    return false;
                 }""",
                 SEL_OFFER,
             )
@@ -1290,7 +1339,12 @@ class MembershipPage:
         for _ in range(3):
             if not self._offer_blocks_interaction():
                 return
-            close = self.page.locator(SEL_OFFER_CLOSE).first
+            close = self.page.locator(
+                ".jjb-membership-offer__close:visible, "
+                ".jjb-membership-offer-visual__close:visible, "
+                ".jjb-membership-offer-visual__desktop-close:visible, "
+                ".jjb-membership-offer-visual__mobile-close:visible"
+            ).first
             if not close.count():
                 return
             try:

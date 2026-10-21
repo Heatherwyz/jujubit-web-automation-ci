@@ -67,11 +67,11 @@ class HomePage:
         # （2026-10-08 查实）。它在本机常不弹、CI 必弹，所以只能靠选择器兜住。
         self.popup_root = page.locator(
             ".newsletter-popup-v2, .newsletter-popup--original,"
-            " .jjb-membership-offer"
+            " .jjb-membership-offer, .jjb-membership-offer-visual"
         )
         self.welcome_popup = page.locator(
             ".newsletter-popup-v2:visible, .newsletter-popup--original:visible,"
-            " .jjb-membership-offer:visible"
+            " .jjb-membership-offer:visible, .jjb-membership-offer-visual:visible"
         )
 
     def open(self, path: str = "") -> None:
@@ -267,6 +267,11 @@ class HomePage:
                         '.jjb-membership-offer',
                         '.jjb-membership-offer__content',
                         '.jjb-membership-offer__close',
+                        // 2026-10-21 改版：offer 弹窗新增 jjb-membership-offer-visual
+                        // 根级遮罩，不在 .jjb-membership-offer 容器内，漏掉它就
+                        // 检测不到遮挡、关不掉（购物车 6 条曾因此全挂）。
+                        '.jjb-membership-offer-visual',
+                        '.jjb-membership-offer-visual__content',
                     ].join(','))];
 
                     const isRendered = element => {
@@ -326,6 +331,11 @@ class HomePage:
             # 会员 offer 弹窗的关闭按钮不带 aria-label，也不叫 modal__close，
             # 漏掉它就只能检测到遮挡、关不掉（2026-10-08 查实）。
             ".jjb-membership-offer__close:visible, "
+            # 2026-10-21 改版：新版 offer 弹窗换成 jjb-membership-offer-visual，
+            # 关闭按钮在 __close / __desktop-close / __mobile-close 上。
+            ".jjb-membership-offer-visual__close:visible, "
+            ".jjb-membership-offer-visual__desktop-close:visible, "
+            ".jjb-membership-offer-visual__mobile-close:visible, "
             "[data-popup-close]:visible, "
             "button:has-text('icon-X'):visible"
         )

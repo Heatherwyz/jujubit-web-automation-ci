@@ -22,6 +22,7 @@ from python_playwright.membership_contract import (
     check_qa_section,
     check_tier_names,
     check_yearly_prices,
+    displayed_price_matches,
     known_price_mismatch_reason,
 )
 
@@ -92,6 +93,16 @@ class MonthlyPriceTests(unittest.TestCase):
             tiers="<div>Basic</div>"
             "<div>Pro <span>USD</span> 19.90</div>"
             "<div>Premium <span>USD</span> 199.90</div>"
+        )
+
+        self.assertEqual(check_monthly_prices(html), [])
+
+    def test_trailing_zero_dropped_still_matches(self) -> None:
+        """主题把 $19.90 写成 $19.9 时金额没变，不算价格改了。"""
+        html = compliant_html(
+            tiers="<div>Basic</div>"
+            "<div>Pro <p class='jjb-membership-card__price'><span>$19.9</span></p></div>"
+            "<div>Premium $199.90</div>"
         )
 
         self.assertEqual(check_monthly_prices(html), [])
@@ -233,6 +244,18 @@ class KnownPriceMismatchTests(unittest.TestCase):
             first = float(observed["first_year"].lstrip("$").replace(",", ""))
 
             self.assertAlmostEqual(first, yearly * 0.8, places=2)
+
+
+class DisplayedPriceMatchTests(unittest.TestCase):
+    """$19.90 与 $19.9 视为同一金额；改成别的数字必须报出来。"""
+
+    def test_trailing_zero_is_same_amount(self) -> None:
+        self.assertTrue(displayed_price_matches("$19.9/month", "$19.90"))
+        self.assertTrue(displayed_price_matches("19.90", "19.9"))
+
+    def test_different_amount_does_not_match(self) -> None:
+        self.assertFalse(displayed_price_matches("$9.90", "$19.90"))
+        self.assertFalse(displayed_price_matches("$199.90", "$19.90"))
 
 
 class ConfirmedValueTests(unittest.TestCase):

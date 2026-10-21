@@ -228,6 +228,15 @@ def browser(playwright_runtime, request):
     # 录制视频时使用 Playwright Chromium；普通运行沿用本机 Chrome。
     if not request.config.getoption("--pw-record-video"):
         launch_options["channel"] = "chrome"
+    # 首页 Hero 轮播靠 setInterval 每 10 秒切一张，圆点进度条是另一条独立的 CSS
+    # 动画。Chromium 会把不可见窗口的定时器冻结而后台恢复时补跑，两条时间因此
+    # 对不齐，进度条跑完了轮播却停住，用例会被误判成没切到下一张。测试全程需要
+    # 真实的自动播放节奏，所以这里禁止后台挂起，而不是放宽断言。
+    launch_options["args"] = [
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+    ]
     instance = playwright_runtime.chromium.launch(**launch_options)
     yield instance
     instance.close()
