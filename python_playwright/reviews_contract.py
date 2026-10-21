@@ -6,7 +6,7 @@ import re
 from html import unescape
 
 REVIEWS_PATH = "/pages/reviews"
-EXPECTED_REVIEW_TITLE = "Is JuJuBit Legit? Real Customer Reviews & Ratings"
+EXPECTED_REVIEW_TITLE = "JuJuBit Reviews: Is JuJuBit Legit? Real Customer Photos & Ratings"
 
 
 def reviews_contract_problems(html: str) -> list[str]:
