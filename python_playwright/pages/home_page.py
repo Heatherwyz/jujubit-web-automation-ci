@@ -42,6 +42,10 @@ RATE_LIMIT_DETAIL_PATTERN = re.compile(
     re.I | re.X,
 )
 
+# 5xx（源站/CDN 瞬时抖动）的重试上限。给两次短退避足够覆盖秒级抖动；
+# 站点真挂时重试也全败，仍按原样抛错，不会变成豁免。
+MAX_SERVER_ERROR_RETRIES = 2
+
 
 class HomePage:
     """JuJuBit 首页的可复用操作集合。"""
@@ -77,6 +81,10 @@ class HomePage:
         会自动退避重试；带 ``--pw-manual-verification`` 时会显示浏览器，允许
         使用者手动完成网站要求的验证后再继续，脚本不会自动绕过验证。
 
+        HTTP 5xx 按源站/CDN 瞬时抖动处理，给两次短退避重试（2026-10-21 会员
+        回归实测：首页在一个有界窗口内连续 503，前后用例都正常）。站点真挂时
+        重试同样全败，仍按原样抛 AssertionError，不会变成豁免。
+
         ``path`` 是可选的站内路径（如 ``/pages/vip-program``），供会员等其它
         页面复用同一套退避与频控熔断逻辑。不传时保持原有打开首页的行为。
         """
@@ -86,7 +94,9 @@ class HomePage:
         retries = self._rate_limit_retries()
         manual_verification = self.config.getoption("--pw-manual-verification")
         # 人工模式在首次 429 时立即交给使用者确认；普通模式才按退避策略重试。
-        total_attempts = 2 if manual_verification else retries + 1
+        # 5xx 重试预算独立于 429：两类错误可能在一轮里交替出现。
+        total_attempts = (2 if manual_verification else retries + 1) + MAX_SERVER_ERROR_RETRIES
+        server_error_attempt = 0
         target_url = urljoin(f"{self.base_url}/", path.lstrip("/")) if path else self.base_url
         for attempt in range(total_attempts):
             # 显式重新打开页面后需要重新观察异步弹窗出现窗口。
@@ -112,6 +122,16 @@ class HomePage:
                 self.config._jujubit_site_rate_limited = reason
                 raise SiteRateLimitError(reason)
             if response is not None and not response.ok:
+                if 500 <= response.status < 600 and server_error_attempt < MAX_SERVER_ERROR_RETRIES:
+                    # 源站瞬时抖动几秒级恢复，不需要 429 那种长退避。
+                    delay = min(5.0 * (2**server_error_attempt), 10.0)
+                    server_error_attempt += 1
+                    print(
+                        f"首页返回 HTTP {response.status}（源站瞬时错误），"
+                        f"等待 {delay:g} 秒后第 {server_error_attempt} 次重试。"
+                    )
+                    time.sleep(delay)
+                    continue
                 raise AssertionError(f"首页请求失败：HTTP {response.status}，{response.url}")
             try:
                 self.page.locator("main").wait_for(state="visible", timeout=15_000)

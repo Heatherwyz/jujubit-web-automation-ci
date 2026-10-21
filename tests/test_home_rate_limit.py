@@ -165,5 +165,113 @@ class HomePageRateLimitTests(unittest.TestCase):
         self.assertEqual(observed, [4_000])
 
 
+class _GotoResponse:
+    """open() 用到的最小导航响应：status + ok。"""
+
+    def __init__(self, status: int, url: str = "https://jujubit.ai/"):
+        self.status = status
+        self.url = url
+        self.headers = {}
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status < 400
+
+
+class _MainLocator:
+    def wait_for(self, **kwargs):
+        return None
+
+
+class _OpenPage:
+    """按预设状态码依次响应 goto，其余导航后检查一律通过。"""
+
+    def __init__(self, statuses):
+        self._statuses = list(statuses)
+        self.goto_calls = 0
+        self.url = "https://jujubit.ai/"
+
+    def get_by_role(self, *args, **kwargs):
+        return object()
+
+    def locator(self, *args, **kwargs):
+        return _MainLocator()
+
+    def goto(self, url, wait_until=None):
+        self.goto_calls += 1
+        return _GotoResponse(self._statuses.pop(0))
+
+    def wait_for_function(self, *args, **kwargs):
+        return None
+
+
+class _OpenConfig:
+    def __init__(self, retries_429: int = 1):
+        self.retries_429 = retries_429
+
+    def getoption(self, name: str):
+        if name == "--pw-429-retries":
+            return self.retries_429
+        if name == "--pw-manual-verification":
+            return False
+        raise AssertionError(f"未预期读取配置项：{name}")
+
+
+class HomeOpenServerErrorTests(unittest.TestCase):
+    """open() 对 5xx 源站瞬时错误的重试语义。
+
+    2026-10-21 会员回归实测：首页在一个有界窗口内连续 503，5 条用例在
+    setup 阶段直接报错，前后的用例都正常。给两次短重试覆盖这类抖动；
+    站点真挂时重试也全败，仍按原样抛 AssertionError。
+    """
+
+    def _home(self, statuses) -> tuple[HomePage, _OpenPage]:
+        page = _OpenPage(statuses)
+        home = HomePage(page, "https://jujubit.ai", _OpenConfig())
+        home._pace_site_request = lambda: None
+        return home, page
+
+    def test_503_then_success_retries_once(self) -> None:
+        """一次 503 后重试成功，用例正常往下走。"""
+        home, page = self._home([503, 200])
+
+        with patch("python_playwright.pages.home_page.time.sleep") as sleep:
+            home.open()
+
+        self.assertEqual(page.goto_calls, 2)
+        sleep.assert_called_once_with(5.0)
+
+    def test_persistent_503_still_fails_after_two_retries(self) -> None:
+        """连续 503 说明站点真的不可用：重试耗尽后仍抛错，不变成豁免。"""
+        home, page = self._home([503, 503, 503])
+
+        with patch("python_playwright.pages.home_page.time.sleep"):
+            with self.assertRaisesRegex(AssertionError, "HTTP 503"):
+                home.open()
+
+        self.assertEqual(page.goto_calls, 3)
+
+    def test_404_never_retries(self) -> None:
+        """4xx 不是瞬时抖动，不能重试。"""
+        home, page = self._home([404])
+
+        with patch("python_playwright.pages.home_page.time.sleep") as sleep:
+            with self.assertRaisesRegex(AssertionError, "HTTP 404"):
+                home.open()
+
+        self.assertEqual(page.goto_calls, 1)
+        sleep.assert_not_called()
+
+    def test_429_and_503_budgets_are_independent(self) -> None:
+        """429 用频控预算、503 用瞬时错误预算，一轮里交替出现也都能重试。"""
+        home, page = self._home([429, 503, 200])
+
+        with patch("python_playwright.pages.home_page.time.sleep") as sleep:
+            home.open()
+
+        self.assertEqual(page.goto_calls, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [15.0, 5.0])
+
+
 if __name__ == "__main__":
     unittest.main()
