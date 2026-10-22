@@ -155,8 +155,8 @@ def _skip_reason(case: ElementTree.Element, *, max_length: int = 120) -> str:
     return ""
 
 
-def _case_detail(case: ElementTree.Element, *, max_length: int = 120) -> str:
-    """取失败用例的一行错误摘要，供卡片直接展示。"""
+def _case_detail(case: ElementTree.Element, *, max_length: int = 90) -> str:
+    """取失败用例的一句错误摘要，供卡片直接展示。"""
     for child in case:
         tag = child.tag.rsplit("}", 1)[-1]
         if tag not in {"failure", "error"}:
@@ -164,9 +164,11 @@ def _case_detail(case: ElementTree.Element, *, max_length: int = 120) -> str:
         text = (child.get("message") or child.text or "").strip()
         if not text:
             continue
-        # 折叠换行与多余空白；pytest 的 longrepr 往往很长。
+        # pytest 的 longrepr 把断言、调用栈和选择器堆在一起。卡片只留第一句，
+        # 完整堆栈在 HTML 报告里。
         flat = re.sub(r"\s+", " ", text)
-        return flat[:max_length]
+        sentence = re.split(r"[。；;]|(?<=\.) ", flat, maxsplit=1)[0].strip()
+        return sentence[:max_length]
     return ""
 
 
@@ -613,7 +615,7 @@ def card_template(
                         "tag": "lark_md",
                         "content": (
                             f"**业务失败**\n**{business_failures}**\n"
-                            + ("无" if business_failures == 0 else "见下方用例明细")
+                            + ("无" if business_failures == 0 else "见上方失败用例")
                         ),
                     },
                 }
@@ -731,42 +733,59 @@ def card_template(
     execution_scope = _suite_execution_lines(
         summary, suite, suite_label, planned_cases, actual_cases
     )
+    # 正文只留状态和失败用例。通过率、分支、提交、模块明细收进默认折叠的面板，
+    # 展开就能看——运行摘要页在 GitHub 上经常打不开，不能只放在那里。
     elements = [
         {
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"**状态：{status}**　　总用例：{total}　　{actor_line}",
+                "content": (
+                    f"**状态：{status}**　{passed}/{executed} 通过"
+                    f"　失败 {business_failures}　未完成 {unfinished}"
+                    f"　{duration_text}\n{actor_line}"
+                ),
             },
         },
-        metric_row,
-        {"tag": "hr"},
-        execution_row,
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": execution_scope}},
-        {"tag": "hr"},
-        {
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": f"**模块结果**\n{_module_lines(summary)}",
-            },
-        },
     ]
     # 直接列出失败用例名与错误摘要：卡片原先只给"业务失败 1"，还得点开报告
     # 才知道是哪条。这是排查时第一个要看的信息。
     failure_lines = _failed_case_lines(summary)
     if failure_lines:
-        elements.append({"tag": "hr"})
         elements.append(
             {
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"**用例明细**\n{failure_lines}",
+                    "content": f"**失败用例**\n{failure_lines}",
                 },
             }
         )
+    elements.append(
+        {
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {
+                "title": {"tag": "plain_text", "content": "执行详情"},
+                "vertical_align": "center",
+                "icon_position": "right",
+                "icon_expanded_angle": 180,
+            },
+            "elements": [
+                metric_row,
+                execution_row,
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**模块结果**\n{_module_lines(summary)}",
+                    },
+                },
+            ],
+        }
+    )
     if rate_limited:
         elements.append(
             {

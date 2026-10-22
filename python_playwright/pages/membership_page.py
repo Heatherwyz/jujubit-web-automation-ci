@@ -416,14 +416,30 @@ class MembershipPage:
 
         注意用渲染后的 innerText：源码里数字可能被标签分隔（线上 Premium 的
         $99.90 在 HTML 源码里搜不到，渲染后才合并）。
+
+        新版价格有数字滚动动画，切换账期后 ``__price-label`` 会从月付价一路滚到
+        年付折扣价。读早了就拿到切换前的 ``$19.9/month``，把已经生效的折扣判成
+        没打折（2026-10-22 实测 CI mem02）。所以连续两次读到同一个值才返回，
+        动画还在跑时两次读数一定不同。
         """
         card = self._find_tier_card(tier)
         if not card.count():
             return ""
         price_el = card.locator(SEL_CARD_PRICE).first
-        if price_el.count():
-            return re.sub(r"\s+", " ", price_el.inner_text()).strip()
-        return re.sub(r"\s+", " ", card.inner_text()).strip()
+        target = price_el if price_el.count() else card
+
+        def read() -> str:
+            return re.sub(r"\s+", " ", target.inner_text()).strip()
+
+        stable = read()
+        deadline = time.monotonic() + TIMEOUT_UI_RENDER / 1000
+        while time.monotonic() < deadline:
+            self.page.wait_for_timeout(300)
+            current = read()
+            if current and current == stable:
+                return current
+            stable = current
+        return stable
 
     def card_button(self, tier: str):
         """返回指定档位卡片上的主按钮。"""
