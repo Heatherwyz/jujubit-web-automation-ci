@@ -257,6 +257,11 @@ class DisplayedPriceMatchTests(unittest.TestCase):
         self.assertFalse(displayed_price_matches("$9.90", "$19.90"))
         self.assertFalse(displayed_price_matches("$199.90", "$19.90"))
 
+    def test_free_tier_is_case_insensitive(self) -> None:
+        """Basic 档在新旧版里分别写作 Free 与 FREE，是同一档位文案，不算价格变了。"""
+        self.assertTrue(displayed_price_matches("FREE", "Free"))
+        self.assertTrue(displayed_price_matches("Free", "FREE"))
+
 
 class ConfirmedValueTests(unittest.TestCase):
     """锁定用户已确认的价格，防止被改回旧值。"""

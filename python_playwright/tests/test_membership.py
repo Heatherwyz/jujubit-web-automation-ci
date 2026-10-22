@@ -25,6 +25,7 @@ from python_playwright.pages.home_page import SiteRateLimitError
 from python_playwright.pages.membership_page import (
     AIRWALLEX_HOSTS,
     DAILY_GENERATE_LIMITS,
+    BASIC_DAILY_GENERATE_LIMIT_TEST_GROUP,
     FIRST_YEAR_PRICES,
     FIRST_YEAR_PRICES_MONTHLY_EQUIV,
     LIMIT_TOAST_MESSAGES,
@@ -58,17 +59,45 @@ pytestmark = pytest.mark.membership
 # 付费墙页面（MEM-01 ~ MEM-10）：不需要登录态
 # ============================================================
 
+# 2026-10-19「会员墙视觉优化」（实验 membership_paywall_visual）只改视觉。
+# stableID=1 是对照组，看旧版；stableID=2 是实验组，看新版 visual 区块。
+# 未固定分组的每日全量两版都合法，由各条用例的新旧选择器兼容。
+PAYWALL_VARIANT_BY_GROUP = {"1": "legacy", "2": "visual"}
 
-def test_mem01_paywall_monthly_three_tiers(home, page, test_platform):
+
+def _expect_paywall_variant(mp, request) -> None:
+    """按 stableID 分组校验付费墙版本；分组没生效时报未完成。
+
+    默认分组（每日全量）不校验：那一轮按线上随机分桶，命中哪一版都对。
+    指定了分组却没按约定渲染，是实验配置或站点的问题，不能当通过。
+    """
+    from python_playwright.tests.conftest import require_ab_group
+
+    group = request.config.getoption("--pw-ab-group")
+    expected = PAYWALL_VARIANT_BY_GROUP.get(group)
+    if expected is None:
+        return
+    require_ab_group(mp.page, request.config, "membership_paywall_visual")
+    actual = mp.paywall_variant()
+    assert actual == expected, (
+        f"stableID={group} 的付费墙应为 {expected} 版，实际渲染 {actual or '无法判定'}"
+    )
+
+
+def test_mem01_paywall_monthly_three_tiers(home, page, test_platform, request):
     """MEM-01: 付费墙 Monthly 展示三档卡片。
 
     Premium 价格线上与确认值不一致（见 membership_contract 的
     KNOWN_PRICE_MISMATCH_TIERS），这里只校验已对齐的档位，避免把已知问题
     混进硬断言。
+
+    指定了 stableID 分组时，顺带校验付费墙版本：1 是对照组看旧版，2 是实验组
+    看新版 visual。每日全量不固定分组，两版都合法。
     """
     mp = MembershipPage(page, home.base_url, home.config)
     mp.open_paywall()
     mp.wait_for_paywall()
+    _expect_paywall_variant(mp, request)
     cards = mp.paywall_cards()
     # H5 新版一次只渲染一张可见卡，另外两张可能在 DOM 里但 hidden。
     # 三档是否齐全看 DOM 数量；当前看得见的那张另由 MEM-03 断言。
@@ -433,10 +462,25 @@ def test_mem22_premium_view_button(home, page, test_platform):
 
 
 @pytest.mark.membership_session
-def test_mem23_daily_generations_expanded(home, page, test_platform):
-    """MEM-23: Daily Generations 直接展开。"""
+def test_mem23_daily_generations_expanded(home, page, test_platform, request):
+    """MEM-23: Daily Generations 直接展开，且次数与分组一致。
+
+    2026-10-15「免费生成次数上限调整」：stableID=2 的实验组把 Basic 每日次数
+    从 40 改成 25。对照组与未固定分组仍是 40，读到 25 就是站点给错了分组。
+    """
     mp = _open_membership(home, page)
     assert mp.daily_generations_expanded(), "Daily Generations 应直接展开展示"
+    group = request.config.getoption("--pw-ab-group")
+    expected = (
+        BASIC_DAILY_GENERATE_LIMIT_TEST_GROUP
+        if group == "2"
+        else DAILY_GENERATE_LIMITS["Basic"]
+    )
+    shown = mp.daily_generations_display().get("raw", "")
+    assert re.search(rf"\b{expected}\b", shown), (
+        f"stableID={group} 时 Basic 每日生成次数应为 {expected}，"
+        f"实际展示 {shown!r}"
+    )
 
 
 @pytest.mark.membership_session
@@ -639,9 +683,15 @@ def test_mem33_member_forced_banner(home, page, test_platform):
 # ============================================================
 
 
-def test_mem34_basic_limit_toast(home, page, test_platform):
+def test_mem34_basic_limit_toast(home, page, test_platform, request):
     """MEM-34: Basic 超限 toast。"""
-    pytest.skip("需要 Basic 用户当日用满 40 次 Generate 的状态")
+    group = request.config.getoption("--pw-ab-group")
+    limit = (
+        BASIC_DAILY_GENERATE_LIMIT_TEST_GROUP
+        if group == "2"
+        else DAILY_GENERATE_LIMITS["Basic"]
+    )
+    pytest.skip(f"需要 Basic 用户当日用满 {limit} 次 Generate 的状态")
 
 
 def test_mem35_pro_limit_toast(home, page, test_platform):

@@ -175,5 +175,26 @@ class AbGroupNamingTests(unittest.TestCase):
         )
 
 
+class OctoberExperimentExpectationTests(unittest.TestCase):
+    """10 月提测里两个按 stableID 分组的期望值。"""
+
+    def test_paywall_visual_follows_group(self) -> None:
+        """会员墙视觉：1 看旧版，2 看新版，未固定分组不限定。"""
+        from python_playwright.tests.test_membership import PAYWALL_VARIANT_BY_GROUP
+
+        self.assertEqual(PAYWALL_VARIANT_BY_GROUP, {"1": "legacy", "2": "visual"})
+        self.assertNotIn("3", PAYWALL_VARIANT_BY_GROUP)
+
+    def test_basic_generation_limit_drops_only_in_test_group(self) -> None:
+        """免费生成次数：实验组 Basic 25 次，对照组与默认仍是 40。"""
+        from python_playwright.pages.membership_page import (
+            BASIC_DAILY_GENERATE_LIMIT_TEST_GROUP,
+            DAILY_GENERATE_LIMITS,
+        )
+
+        self.assertEqual(DAILY_GENERATE_LIMITS["Basic"], 40)
+        self.assertEqual(BASIC_DAILY_GENERATE_LIMIT_TEST_GROUP, 25)
+
+
 if __name__ == "__main__":
     unittest.main()

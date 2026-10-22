@@ -68,6 +68,9 @@ def displayed_price_matches(text: str, expected: str) -> bool:
 
     主题常把 ``$19.90`` 渲染成 ``$19.9``（末尾 0 被吃掉），金额相同，
     按同一金额认，不把少一位小数当成价格改了。契约层和浏览器层共用。
+
+    匹配不区分大小写：Basic 档的 ``Free`` 在新旧版里分别写作 ``Free`` 与
+    ``FREE``（2026-10-22 实测），是同一档位的文案大小写差异，不是价格变了。
     """
     haystack = re.sub(r"[,\s]", "", text)
     amount = expected.lstrip("$").replace(",", "")
@@ -77,7 +80,7 @@ def displayed_price_matches(text: str, expected: str) -> bool:
     elif re.fullmatch(r"\d+\.\d", amount):
         variants.add(amount + "0")
     return any(
-        re.search(rf"(?<!\d){re.escape(variant)}(?!\d)", haystack)
+        re.search(rf"(?<!\d){re.escape(variant)}(?!\d)", haystack, re.I)
         for variant in variants
     )
 

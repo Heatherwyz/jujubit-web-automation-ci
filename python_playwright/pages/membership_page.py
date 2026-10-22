@@ -52,6 +52,11 @@ FIRST_YEAR_PRICES = {"Pro": "$191.04", "Premium": "$1,919.04"}
 FIRST_YEAR_PRICES_MONTHLY_EQUIV = {"Pro": "$15.92", "Premium": "$159.92"}
 
 DAILY_GENERATE_LIMITS = {"Basic": 40, "Pro": 100, "Premium": 200}
+# 2026-10-15 提测「免费生成次数上限调整」（实验
+# independent_site_free_generation_limit）：stableID=2 的实验组把付费墙 Basic
+# 的每日次数从 40 改成 25，其余档位不变。对照组（stableID=1）与未固定分组的
+# 每日全量仍是 40。
+BASIC_DAILY_GENERATE_LIMIT_TEST_GROUP = 25
 
 LIMIT_TOAST_MESSAGES = {
     "Basic": (
@@ -250,6 +255,9 @@ class MembershipPage:
         self.base_url = base_url.rstrip("/")
         self.config = config
         self.home = HomePage(page, self.base_url, config)
+        # 埋点事件进 Python 进程，跨源跳转（匿名点 Get 会跳 Shopify 登录页）
+        # 也丢不了；页面侧 window/sessionStorage 那两份只是跳转前的过渡。
+        self._tracked_events: list[dict] = []
 
     # ---- 导航 ----
 
@@ -299,6 +307,21 @@ class MembershipPage:
     def paywall_cards(self):
         """返回三档卡片的 locator（线上实测 class：jjb-membership-card）。"""
         return self.page.locator(SEL_CARD)
+
+    def paywall_variant(self) -> str:
+        """当前渲染出来的付费墙版本：``visual`` 是新版，``legacy`` 是旧版。
+
+        2026-10-19「会员墙视觉优化」（实验 membership_paywall_visual）只改视觉，
+        不改文案、价格与购买逻辑。滚动上线期间新旧两版同页，任一时刻只有一版
+        可见，所以按看得见的卡片判断，不能数 DOM——旧版元素留在 DOM 里但 0×0。
+        """
+        visual = self.page.locator(".jjb-membership-visual-card:visible").count()
+        legacy = self.page.locator(".jjb-membership-card:visible").count()
+        if visual and not legacy:
+            return "visual"
+        if legacy and not visual:
+            return "legacy"
+        return ""
 
     def paywall_coming_soon(self) -> bool:
         """付费墙是否处于"Coming Soon"未上线状态。
@@ -382,7 +405,11 @@ class MembershipPage:
         expect(toggle.first).to_be_visible(timeout=TIMEOUT_UI_RENDER)
         target = toggle.locator(f"[data-billing-cycle='{cycle.lower()}']").first
         target.click()
-        self.page.wait_for_timeout(2000)
+        # 等目标账期的选中态真的翻转，再读价格：新版价格有数字滚动动画，
+        # 固定等 2 秒在 CI 上可能读到切换前的月付价（2026-10-22 实测 CI mem02
+        # 读到 $19.9/month）。aria-selected 翻转证明点击被站点脚本接住了。
+        expect(target).to_have_attribute("aria-selected", "true", timeout=TIMEOUT_UI_RENDER)
+        self.page.wait_for_timeout(1_000)
 
     def card_price_text(self, tier: str) -> str:
         """读取指定档位卡片上的价格文案。
@@ -1092,15 +1119,27 @@ class MembershipPage:
         断言的是投递渠道，不是主题有没有按约定上报。这里断言的是契约本身：
         主题用什么事件名、带什么参数调用了 track。
 
+        事件经 ``expose_function`` 回调直接进 Python 进程：匿名点 Get 会跨源跳到
+        Shopify 登录页，页面里的 window / sessionStorage 记录会随旧文档一起销毁
+        （2026-10-22 mem43 实测一个事件都读不到），Python 侧的这份不受影响。
+
         zlog 由另一个脚本后置注入，直接赋值会被覆盖，所以用属性 setter 包住：
         无论 zlog 何时被赋值，track 都会先记录再转发给真实实现。
         """
+        self._tracked_events = []
+
+        def _record(entry):
+            if isinstance(entry, dict) and entry.get("name"):
+                self._tracked_events.append(
+                    {"name": str(entry["name"]), "params": entry.get("params") or {}}
+                )
+
+        self.page.expose_function("__jjbRecordEvent", _record)
         self.page.add_init_script(
             """
             (() => {
-                // 事件同时写 window 与 sessionStorage：点击 Get 后页面可能
-                // 跳转（10-18 实测 mem43 撞上 execution context destroyed），
-                // window 里的记录随旧文档销毁，sessionStorage 在同源导航后仍在。
+                // 事件既写 Python 回调（跨源跳转也丢不了），也写 sessionStorage
+                // 作同源跳转的过渡；window 那份只是当前文档的临时视图。
                 const LOG_KEY = '__jjbTrackedEventsLog';
                 const readPersisted = () => {
                     try {
@@ -1120,6 +1159,9 @@ class MembershipPage:
                         const persisted = readPersisted();
                         persisted.push(entry);
                         sessionStorage.setItem(LOG_KEY, JSON.stringify(persisted));
+                        if (typeof window.__jjbRecordEvent === 'function') {
+                            window.__jjbRecordEvent(entry);
+                        }
                     } catch (e) {}
                 };
                 // 只包一次 track 不够：zlog 脚本会在自己初始化完成后，往同一个
@@ -1169,13 +1211,13 @@ class MembershipPage:
     def tracked_events(self, name: str = "") -> list[dict]:
         """取已记录的埋点事件，可按事件名过滤。
 
-        导航瞬间 evaluate 会撞 execution context destroyed；页面跳转后
-        window 里的记录也被重置。两条都兜底：崩溃按"此刻没有"返回空，
-        让 wait_for_tracked_event 继续轮询；能读时以 sessionStorage 里
-        跨导航累积的那份为准。
+        优先读 Python 进程里经 expose_function 回调累积的那份——它在跨源跳转
+        （匿名点 Get 跳 Shopify 登录页）后仍在；页面跳转瞬间 evaluate 会撞
+        execution context destroyed，那份作兜底/同源补充。两边按去重合并。
         """
+        events = list(self._tracked_events)
         try:
-            events = self.page.evaluate(
+            from_page = self.page.evaluate(
                 """() => {
                     const fromWindow = window.__jjbTrackedEvents || [];
                     try {
@@ -1190,10 +1232,20 @@ class MembershipPage:
                     }
                 }"""
             )
+            if isinstance(from_page, list):
+                existing = {
+                    (item.get("name"), json.dumps(item.get("params"), sort_keys=True))
+                    for item in events
+                }
+                for item in from_page:
+                    if not isinstance(item, dict):
+                        continue
+                    key = (item.get("name"), json.dumps(item.get("params"), sort_keys=True))
+                    if key not in existing:
+                        events.append(item)
+                        existing.add(key)
         except Exception:
-            return []
-        if not isinstance(events, list):
-            return []
+            pass
         if not name:
             return events
         return [item for item in events if item.get("name") == name]

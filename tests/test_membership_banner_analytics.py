@@ -116,9 +116,11 @@ class EventRecordingSurvivesNavigationTests(unittest.TestCase):
     `page.evaluate("() => window.__jjbTrackedEvents")` 撞上
     execution context destroyed，整条用例报错。window 里的记录也随旧文档销毁。
 
-    这里钉住修复的两个关键点，防回退：
-    1. 记录要同时写 sessionStorage，同源导航后还能读到；
-    2. 读取要对 evaluate 崩溃容错，返回空让轮询继续，而不是把用例炸掉。
+    2026-10-22 进一步加固：匿名点 Get 会跨源跳 Shopify 登录页，sessionStorage
+    也拿不到（跨源不共享），实测一个事件都读不到。改成 expose_function 把事件
+    回调进 Python 进程，导航也丢不了；sessionStorage 保留作同源过渡。
+
+    这里钉住修复的关键点，防回退。
     """
 
     def test_record_persists_to_session_storage(self) -> None:
@@ -126,20 +128,26 @@ class EventRecordingSurvivesNavigationTests(unittest.TestCase):
 
         self.assertIn("__jjbTrackedEventsLog", source)
         self.assertIn("sessionStorage.setItem", source)
-        # 初始化时先从持久化读回，否则导航后新文档会把记录清零。
-        self.assertIn("readPersisted", source)
 
-    def test_tracked_events_tolerates_navigation_race(self) -> None:
+    def test_events_also_recorded_python_side(self) -> None:
+        """事件必须经 expose_function 进 Python 进程，否则跨源跳转会丢。"""
+        source = PAGE_OBJECT.read_text(encoding="utf-8")
+        start = source.index("def record_tracked_events")
+        end = source.index("\n    def ", start + 10)
+        body = source[start:end]
+
+        self.assertIn("expose_function", body)
+        self.assertIn("__jjbRecordEvent", body)
+        self.assertIn("_tracked_events", body)
+
+    def test_tracked_events_reads_python_side(self) -> None:
+        """tracked_events 要优先读 Python 侧那份，跨源跳转后才有数据。"""
         source = PAGE_OBJECT.read_text(encoding="utf-8")
         start = source.index("def tracked_events")
         end = source.index("\n    def ", start + 10)
         body = source[start:end]
 
-        # evaluate 外层必须有容错，导航销毁时返回空列表而不是抛出去。
-        self.assertIn("except Exception", body)
-        self.assertIn("return []", body)
-        # 读取要带上 sessionStorage 里跨导航累积的那份。
-        self.assertIn("__jjbTrackedEventsLog", body)
+        self.assertIn("_tracked_events", body)
 
 
 if __name__ == "__main__":
