@@ -421,8 +421,15 @@ class MembershipPage:
         年付折扣价。读早了就拿到切换前的 ``$19.9/month``，把已经生效的折扣判成
         没打折（2026-10-22 实测 CI mem02）。所以连续两次读到同一个值才返回，
         动画还在跑时两次读数一定不同。
+
+        必须优先读当前可见的卡片。改版期间新旧两版同页：看得见的新版年付态是
+        ``$15.92``，藏起来的旧版卡片停在 ``$19.9/month``。不限可见时
+        ``.first`` 会命中那张隐藏的旧卡，把已生效的折扣读成原价。H5 月付一次
+        只渲染一张可见卡，其余档位只在 DOM 里，这时才回退到不限可见的查找。
         """
-        card = self._find_tier_card(tier)
+        card = self._find_tier_card(tier, visible_only=True)
+        if not card.count():
+            card = self._find_tier_card(tier)
         if not card.count():
             return ""
         price_el = card.locator(SEL_CARD_PRICE).first
